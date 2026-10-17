@@ -145,11 +145,24 @@ live account more than necessary, because failed logins can lock the account.
 ### Releases
 
 Releases use calendar versioning in Home Assistant's format, `YYYY.M.MICRO`
-(for example `2026.10.0`), with no `v` prefix on tags. To release, set
-`version` in `pyproject.toml` and `manifest.json`, then publish a GitHub
-release with the matching tag. The release workflow attaches the
-`alliant_energy.zip` that HACS installs. See
+(for example `2026.10.0`), with no `v` prefix on tags. See
 [ADR 0009](docs/adr/0009-calendar-versioning.md).
+
+To release, run the **Release** workflow from the Actions tab. It runs the
+checks, then `scripts/release.sh`:
+
+1. [bumpver](https://github.com/mbarkhau/bumpver) picks the next version for
+   today's date and updates `pyproject.toml` and `manifest.json`. The first
+   release of an untagged version keeps the version as it is.
+2. [git-cliff](https://git-cliff.org/) regenerates `CHANGELOG.md` from the
+   Conventional Commits since the last tag.
+3. The script commits `build(release): <version>` and tags it.
+
+The workflow then pushes the commit and tag and publishes a GitHub release
+with the changelog entry and the `alliant_energy.zip` that HACS installs.
+
+`scripts/release.sh` also works locally. It never pushes, so you can inspect
+the result and then push the commit and tag yourself.
 
 ## License
 

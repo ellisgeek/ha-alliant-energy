@@ -17,6 +17,8 @@ dev = [
     "ruff>=0.6",
     "ty>=0.0.89",
     "prek>=0.5.5",
+    "bumpver>=2026.1132",
+    "git-cliff>=2.14.2",
     # Runtime requirement from manifest.json; here so ty can resolve it.
     "pdfplumber==0.11.10",
     # Recorder runtime deps that HA imports but doesn't declare in core
@@ -42,6 +44,64 @@ python-version = "3.14"
 
 [tool.ty.src]
 include = ["custom_components", "tests"]
+
+[tool.bumpver]
+# CalVer like Home Assistant: YYYY.M.MICRO; MICRO resets each month (ADR 0009).
+# Driven by scripts/release.sh, which also writes the changelog, commits, and tags.
+current_version = "2026.10.0"
+version_pattern = "YYYY.MM.INC0"
+commit = false
+tag = false
+push = false
+
+[tool.bumpver.file_patterns]
+"pyproject.toml" = ['current_version = "{version}"', '^version = "{version}"']
+"custom_components/alliant_energy/manifest.json" = ['"version": "{version}"']
+
+[tool.git-cliff.changelog]
+header = """# Changelog
+
+All notable changes to this project. Versions follow CalVer `YYYY.M.MICRO`
+(see docs/adr/0009-calendar-versioning.md); entries are generated from
+Conventional Commits by git-cliff.
+
+"""
+body = """
+{% if version %}\
+## [{{ version }}] - {{ timestamp | date(format="%Y-%m-%d") }}
+{% else %}\
+## [Unreleased]
+{% endif %}\
+{% for group, commits in commits | group_by(attribute="group") %}
+### {{ group | striptags | trim | upper_first }}
+{% for commit in commits %}
+- {% if commit.scope %}**{{ commit.scope }}:** {% endif %}\
+{% if commit.breaking %}[**breaking**] {% endif %}\
+{{ commit.message | upper_first }} ({{ commit.id | truncate(length=7, end="") }})\
+{% endfor %}
+{% endfor %}\n
+"""
+trim = true
+
+[tool.git-cliff.git]
+conventional_commits = true
+filter_unconventional = true
+split_commits = false
+protect_breaking_commits = true
+filter_commits = false
+tag_pattern = "^20[0-9]{2}\\.[0-9]+\\.[0-9]+$"
+sort_commits = "oldest"
+commit_parsers = [
+    { message = "^build\\(release\\)", skip = true },
+    { message = "^feat", group = "<!-- 0 -->Features" },
+    { message = "^fix", group = "<!-- 1 -->Bug fixes" },
+    { message = "^perf", group = "<!-- 2 -->Performance" },
+    { message = "^refactor", group = "<!-- 3 -->Refactoring" },
+    { message = "^docs", group = "<!-- 4 -->Documentation" },
+    { message = "^test", group = "<!-- 5 -->Tests" },
+    { message = "^build", group = "<!-- 6 -->Build" },
+    { message = "^ci", group = "<!-- 7 -->CI" },
+]
 
 [tool.uv.build-backend]
 # The integration ships as the `custom_components` package at the repo root
