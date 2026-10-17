@@ -8,8 +8,9 @@ set -euo pipefail
 
 cd "$(git rev-parse --show-toplevel)"
 
-if [[ -n "$(git status --porcelain)" ]]; then
-  echo "error: working tree is not clean" >&2
+# Untracked files (e.g. local editor settings) can't end up in the release.
+if [[ -n "$(git status --porcelain --untracked-files=no)" ]]; then
+  echo "error: working tree has uncommitted changes" >&2
   exit 1
 fi
 
