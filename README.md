@@ -129,7 +129,7 @@ git hooks.
 ```sh
 uv sync --group dev        # install dependencies
 uv run prek install        # git hooks (the devcontainer does this for you)
-uv run prek run -a         # all hooks: ruff lint + format, ty, file checks
+uv run prek run -a         # all hooks: ruff, ty, actionlint, file checks
 uv run pytest              # offline test suite (also runs on git push)
 ```
 

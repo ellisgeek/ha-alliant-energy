@@ -6,7 +6,7 @@ cost, and bill data). The integration lives under
 `docs/backend-api.md` for the reverse-engineered backend, and `docs/adr/` for
 decisions.
 
-Checks: `uv run prek run -a` (ruff, ruff format, ty, file checks) and
+Checks: `uv run prek run -a` (ruff, ruff format, ty, actionlint, file checks) and
 `uv run pytest`; prek hooks run them on commit/push. Targets
 current Home Assistant only (Python 3.14; ADR 0008).
 
