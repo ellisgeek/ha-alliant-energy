@@ -148,8 +148,7 @@ Releases use calendar versioning in Home Assistant's format, `YYYY.M.MICRO`
 (for example `2026.10.0`), with no `v` prefix on tags. See
 [ADR 0009](docs/adr/0009-calendar-versioning.md).
 
-To release, run the **Release** workflow from the Actions tab. It runs the
-checks, then `scripts/release.sh`:
+To cut a release, run `scripts/release.sh` on a clean `main`:
 
 1. [bumpver](https://github.com/mbarkhau/bumpver) picks the next version for
    today's date and updates `pyproject.toml` and `manifest.json`. The first
@@ -161,13 +160,19 @@ checks, then `scripts/release.sh`:
    Commits that start with "deprecate" or "remove" go under Deprecated or
    Removed. `docs`, `test`, `build`, `ci`, and `refactor` commits are left out
    unless they are breaking.
-3. The script commits `build(release): <version>` and tags it.
+3. The script commits `build(release): <version>` and tags it. It never
+   pushes.
 
-The workflow then pushes the commit and tag and publishes a GitHub release
-with the changelog entry and the `alliant_energy.zip` that HACS installs.
+Review the commit and changelog, then push both:
 
-`scripts/release.sh` also works locally. It never pushes, so you can inspect
-the result and then push the commit and tag yourself.
+```sh
+git push origin HEAD 2026.10.1   # the version the script printed
+```
+
+Pushing the tag starts the **Release** workflow. It checks that the tag is
+CalVer and matches `manifest.json`, runs the checks, and publishes a GitHub
+release with the changelog entry as notes and the `alliant_energy.zip` that
+HACS installs.
 
 ## License
 

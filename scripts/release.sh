@@ -1,16 +1,10 @@
 #!/usr/bin/env bash
 # Cut a release locally: bump the CalVer version, regenerate CHANGELOG.md,
-# commit, and tag. It never pushes; push the commit and tag yourself, or run
-# the Release workflow on GitHub, which calls this script and then publishes.
+# commit, and tag. It never pushes. Review the result, then push the commit and
+# the tag; the Release workflow publishes the GitHub release when the tag lands.
 #
-# Usage: scripts/release.sh [--notes FILE]
-#   --notes FILE   also write this release's notes (for the GitHub release)
+# Usage: scripts/release.sh
 set -euo pipefail
-
-notes=""
-if [[ "${1:-}" == "--notes" ]]; then
-  notes="${2:?--notes needs a file path}"
-fi
 
 cd "$(git rev-parse --show-toplevel)"
 
@@ -35,12 +29,10 @@ uv run --frozen git-cliff --tag "$version" --output CHANGELOG.md
 # git-cliff leaves an extra blank line at the end; keep exactly one newline.
 changelog="$(cat CHANGELOG.md)"
 printf '%s\n' "$changelog" > CHANGELOG.md
-if [[ -n "$notes" ]]; then
-  uv run --frozen git-cliff --tag "$version" --unreleased --strip all --output "$notes"
-fi
 
 git add pyproject.toml uv.lock custom_components/alliant_energy/manifest.json CHANGELOG.md
 git commit --quiet -m "build(release): $version"
 git tag -a "$version" -m "$version"
 
-echo "$version"
+echo "Tagged $version. Review it, then publish with:"
+echo "  git push origin HEAD $version"
