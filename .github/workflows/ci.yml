@@ -14,6 +14,5 @@ jobs:
         with:
           enable-cache: true
       - run: uv sync --locked --group dev
-      - run: uv run ruff check .
-      - run: uv run ty check
+      - run: uv run prek run --all-files --show-diff-on-failure
       - run: uv run pytest
