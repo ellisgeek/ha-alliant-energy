@@ -1,0 +1,26 @@
+name: Release
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  zip:
+    name: Attach integration zip
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Stamp version from tag
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          jq --arg v "$version" '.version = $v' custom_components/alliant_energy/manifest.json > manifest.tmp
+          mv manifest.tmp custom_components/alliant_energy/manifest.json
+      - name: Build zip
+        run: cd custom_components/alliant_energy && zip -r "$GITHUB_WORKSPACE/alliant_energy.zip" . -x '__pycache__/*'
+      - name: Upload to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$GITHUB_REF_NAME" alliant_energy.zip --clobber

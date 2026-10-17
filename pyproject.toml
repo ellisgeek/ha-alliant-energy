@@ -1,0 +1,49 @@
+[build-system]
+requires = ["uv_build>=0.13,<0.14"]
+build-backend = "uv_build"
+
+[project]
+name = "ha-alliant-energy"
+version = "0.1.0"
+description = "Home Assistant integration for Alliant Energy electric and gas usage"
+requires-python = ">=3.14.2"
+dependencies = ["homeassistant>=2026.10", "curl_cffi==0.16.3"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "pytest-homeassistant-custom-component>=0.13",
+    "ruff>=0.6",
+    "ty>=0.0.89",
+    # Runtime requirement from manifest.json; here so ty can resolve it.
+    "pdfplumber==0.11.10",
+    # Recorder runtime deps that HA imports but doesn't declare in core
+    # metadata; needed so the statistics module imports under test.
+    "psutil-home-assistant",
+    "fnv-hash-fast",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py314"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.ty.environment]
+python-version = "3.14"
+
+[tool.ty.src]
+include = ["custom_components", "tests"]
+
+[tool.uv.build-backend]
+# The integration ships as the `custom_components` package at the repo root
+# rather than a src/ layout, so point the build backend at it directly.
+module-root = ""
+module-name = "custom_components"

@@ -1,0 +1,21 @@
+{
+  "domain": "alliant_energy",
+  "name": "Alliant Energy",
+  "codeowners": [
+    "@ellisgeek"
+  ],
+  "config_flow": true,
+  "documentation": "https://github.com/ellisgeek/ha-alliant-energy",
+  "integration_type": "service",
+  "iot_class": "cloud_polling",
+  "issue_tracker": "https://github.com/ellisgeek/ha-alliant-energy/issues",
+  "loggers": [
+    "curl_cffi",
+    "pdfplumber"
+  ],
+  "requirements": [
+    "curl_cffi==0.16.3",
+    "pdfplumber==0.11.10"
+  ],
+  "version": "0.1.0"
+}

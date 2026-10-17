@@ -1,0 +1,63 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "description": "Sign in with your Alliant Energy (myaccount.alliantenergy.com) credentials.",
+        "data": {
+          "username": "Username or email",
+          "password": "Password"
+        },
+        "title": "Alliant Energy"
+      },
+      "account": {
+        "description": "Choose which account to add.",
+        "data": {
+          "account_id": "Account"
+        },
+        "title": "Choose account"
+      },
+      "reauth_confirm": {
+        "description": "Your Alliant Energy sign-in needs to be renewed.",
+        "data": {
+          "username": "Username or email",
+          "password": "Password"
+        },
+        "title": "Sign in again"
+      },
+      "tfa": {
+        "description": "Enter the verification code Alliant Energy just sent you.",
+        "data": {
+          "code": "Verification code"
+        },
+        "title": "Verification code"
+      }
+    },
+    "error": {
+      "invalid_auth": "Invalid username or password.",
+      "invalid_tfa": "That verification code was not accepted.",
+      "cannot_connect": "Could not reach Alliant Energy. Try again later.",
+      "no_accounts": "No accounts were found for this login.",
+      "account_mismatch": "These credentials do not include the account you are re-authenticating.",
+      "unknown": "An unexpected error occurred."
+    },
+    "abort": {
+      "already_configured": "This account is already configured.",
+      "account_mismatch": "These credentials do not include the account you are re-authenticating.",
+      "reauth_successful": "Re-authentication was successful.",
+      "no_accounts": "No accounts were found for this login.",
+      "cannot_connect": "Could not reach Alliant Energy. Try again later."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Cost rates",
+        "description": "Leave a field blank to use the rate from your latest bill (the marginal rate read from the bill PDF, or the billing cycle's amount divided by its usage if the PDF can't be read). Enter a rate to use a fixed price instead.",
+        "data": {
+          "electricity_rate": "Electricity rate ($/kWh)",
+          "gas_rate": "Gas rate ($/therm)"
+        }
+      }
+    }
+  }
+}
