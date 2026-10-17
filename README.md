@@ -122,15 +122,21 @@ More detail:
 ## Development
 
 Open the folder in VS Code and choose **Reopen in Container**. The devcontainer
-has Python 3.14, `uv`, and the GitHub CLI, and it installs the locked
-development dependencies when it is created.
+has Python 3.14, `uv`, and the GitHub CLI. When it is created, it installs the
+locked development dependencies and the [prek](https://github.com/j178/prek)
+git hooks.
 
 ```sh
 uv sync --group dev        # install dependencies
-uv run pytest              # offline test suite
-uv run ruff check .        # lint
-uv run ty check            # type check
+uv run prek install        # git hooks (the devcontainer does this for you)
+uv run prek run -a         # all hooks: ruff lint + format, ty, file checks
+uv run pytest              # offline test suite (also runs on git push)
 ```
+
+Commit messages follow [Conventional Commits](https://www.conventionalcommits.org/)
+with the [Angular types](https://github.com/angular/angular/blob/main/contributing-docs/commit-message-guidelines.md)
+(`build`, `ci`, `docs`, `feat`, `fix`, `perf`, `refactor`, `test`). A prek
+`commit-msg` hook checks this.
 
 The tests use `pytest-homeassistant-custom-component` with a fake HTTP session.
 They need no Alliant credentials and no network access. Do not test against a

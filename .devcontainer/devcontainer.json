@@ -10,7 +10,7 @@
   ],
   // uv installs the Python pinned in .python-version (3.14, required by
   // current Home Assistant) into .venv; the image's Python is only a bootstrap.
-  "postCreateCommand": "uv sync --group dev",
+  "postCreateCommand": "uv sync --group dev && uv run prek install --install-hooks",
   "customizations": {
     "vscode": {
       "extensions": [

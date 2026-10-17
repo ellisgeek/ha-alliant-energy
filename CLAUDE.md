@@ -6,8 +6,12 @@ cost, and bill data). The integration lives under
 `docs/backend-api.md` for the reverse-engineered backend, and `docs/adr/` for
 decisions.
 
-Checks: `uv run ruff check .`, `uv run ty check`, `uv run pytest`. Targets
+Checks: `uv run prek run -a` (ruff, ruff format, ty, file checks) and
+`uv run pytest`; prek hooks run them on commit/push. Targets
 current Home Assistant only (Python 3.14; ADR 0008).
+
+Commits: Conventional Commits, Angular types only (`build`, `ci`, `docs`,
+`feat`, `fix`, `perf`, `refactor`, `test`); enforced by a prek `commit-msg` hook.
 
 ## Agent skills
 

@@ -16,6 +16,7 @@ dev = [
     "pytest-homeassistant-custom-component>=0.13",
     "ruff>=0.6",
     "ty>=0.0.89",
+    "prek>=0.5.5",
     # Runtime requirement from manifest.json; here so ty can resolve it.
     "pdfplumber==0.11.10",
     # Recorder runtime deps that HA imports but doesn't declare in core
