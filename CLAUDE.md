@@ -13,6 +13,9 @@ current Home Assistant only (Python 3.14; ADR 0008).
 Commits: Conventional Commits, Angular types only (`build`, `ci`, `docs`,
 `feat`, `fix`, `perf`, `refactor`, `test`); enforced by a prek `commit-msg` hook.
 
+Releases: CalVer `YYYY.M.MICRO` like Home Assistant (e.g. `2026.10.0`, no `v`
+prefix; ADR 0009). Never push, tag, or publish a release unless asked.
+
 ## Agent skills
 
 ### Issue tracker

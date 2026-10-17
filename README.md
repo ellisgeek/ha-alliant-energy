@@ -142,6 +142,15 @@ The tests use `pytest-homeassistant-custom-component` with a fake HTTP session.
 They need no Alliant credentials and no network access. Do not test against a
 live account more than necessary, because failed logins can lock the account.
 
+### Releases
+
+Releases use calendar versioning in Home Assistant's format, `YYYY.M.MICRO`
+(for example `2026.10.0`), with no `v` prefix on tags. To release, set
+`version` in `pyproject.toml` and `manifest.json`, then publish a GitHub
+release with the matching tag. The release workflow attaches the
+`alliant_energy.zip` that HACS installs. See
+[ADR 0009](docs/adr/0009-calendar-versioning.md).
+
 ## License
 
 [MIT](LICENSE)

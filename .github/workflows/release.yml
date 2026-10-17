@@ -15,7 +15,12 @@ jobs:
       - uses: actions/checkout@v5
       - name: Stamp version from tag
         run: |
-          version="${GITHUB_REF_NAME#v}"
+          # Releases use CalVer YYYY.M.MICRO (docs/adr/0009-calendar-versioning.md).
+          version="$GITHUB_REF_NAME"
+          if ! [[ "$version" =~ ^20[0-9]{2}\.(1[0-2]|[1-9])\.(0|[1-9][0-9]*)$ ]]; then
+            echo "::error::Tag '$version' is not CalVer YYYY.M.MICRO (e.g. 2026.10.0)"
+            exit 1
+          fi
           jq --arg v "$version" '.version = $v' custom_components/alliant_energy/manifest.json > manifest.tmp
           mv manifest.tmp custom_components/alliant_energy/manifest.json
       - name: Build zip

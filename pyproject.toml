@@ -4,7 +4,7 @@ build-backend = "uv_build"
 
 [project]
 name = "ha-alliant-energy"
-version = "0.1.0"
+version = "2026.10.0"
 description = "Home Assistant integration for Alliant Energy electric and gas usage"
 requires-python = ">=3.14.2"
 dependencies = ["homeassistant>=2026.10", "curl_cffi==0.16.3"]

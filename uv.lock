@@ -1163,7 +1163,7 @@ wheels = [
 
 [[package]]
 name = "ha-alliant-energy"
-version = "0.1.0"
+version = "2026.10.0"
 source = { editable = "." }
 dependencies = [
     { name = "curl-cffi" },
