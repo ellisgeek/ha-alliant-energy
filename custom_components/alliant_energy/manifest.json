@@ -5,6 +5,9 @@
     "@ellisgeek"
   ],
   "config_flow": true,
+  "dependencies": [
+    "recorder"
+  ],
   "documentation": "https://github.com/ellisgeek/ha-alliant-energy",
   "integration_type": "service",
   "iot_class": "cloud_polling",

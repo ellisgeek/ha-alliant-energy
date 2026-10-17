@@ -1,6 +1,7 @@
 """Shared test fixtures."""
 
 import pytest
+from homeassistant.components.recorder import Recorder
 from homeassistant.core import HomeAssistant
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
@@ -11,6 +12,14 @@ from custom_components.alliant_energy.const import (
     CONF_USERNAME,
     DOMAIN,
 )
+
+
+@pytest.fixture(autouse=True)
+def auto_recorder(recorder_mock: Recorder) -> None:
+    """Run a real recorder in every test; the integration depends on it.
+
+    Autouse so it is set up before ``hass``, as the recorder fixture requires.
+    """
 
 
 @pytest.fixture
