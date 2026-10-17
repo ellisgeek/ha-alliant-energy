@@ -68,9 +68,7 @@ class AlliantEnergyConfigFlow(ConfigFlow, domain=DOMAIN):
         self._accounts: list[Account] = []
         self._api: AlliantEnergyApi | None = None
 
-    async def async_step_user(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
+    async def async_step_user(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """Collect credentials and authenticate."""
         errors: dict[str, str] = {}
         if user_input is not None:
@@ -82,9 +80,7 @@ class AlliantEnergyConfigFlow(ConfigFlow, domain=DOMAIN):
             if result is not None:
                 return result
 
-        return self.async_show_form(
-            step_id="user", data_schema=STEP_USER_SCHEMA, errors=errors
-        )
+        return self.async_show_form(step_id="user", data_schema=STEP_USER_SCHEMA, errors=errors)
 
     async def async_step_account(
         self, user_input: dict[str, Any] | None = None
@@ -107,9 +103,7 @@ class AlliantEnergyConfigFlow(ConfigFlow, domain=DOMAIN):
             ),
         )
 
-    async def async_step_tfa(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
+    async def async_step_tfa(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """Fallback two-factor code entry (only reached if the API gates on it)."""
         assert self._api is not None
         errors: dict[str, str] = {}
@@ -137,9 +131,7 @@ class AlliantEnergyConfigFlow(ConfigFlow, domain=DOMAIN):
             errors=errors,
         )
 
-    async def _async_login_and_route(
-        self, errors: dict[str, str]
-    ) -> ConfigFlowResult | None:
+    async def _async_login_and_route(self, errors: dict[str, str]) -> ConfigFlowResult | None:
         """Log in, then route to account selection, TFA, or an error."""
         self._api = AlliantEnergyApi()
         try:
@@ -241,9 +233,7 @@ class AlliantEnergyOptionsFlow(OptionsFlow):
     a value here overrides it with a fixed price.
     """
 
-    async def async_step_init(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
+    async def async_step_init(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """Manage the cost-rate options."""
         if user_input is not None:
             data: dict[str, float] = {}

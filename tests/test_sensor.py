@@ -42,9 +42,7 @@ async def test_bill_sensors_expose_amount_and_due_date(
     from datetime import date
 
     coordinator = EnergyCoordinator(hass, config_entry, AsyncMock())
-    coordinator.data = EnergyData(
-        amount_due=117.74, currency="USD", due_date=date(2026, 11, 2)
-    )
+    coordinator.data = EnergyData(amount_due=117.74, currency="USD", due_date=date(2026, 11, 2))
     by_key = {d.key: d for d in SENSOR_DESCRIPTIONS}
 
     amount = UtilitySensor(coordinator, by_key["amount_due"], "e")

@@ -158,18 +158,12 @@ class LocalUtilityClient:
                     self._premise = account.premise_number
                     break
             if not self._premise:
-                raise AlliantEnergyError(
-                    f"No premise found for account {self._account_id}"
-                )
+                raise AlliantEnergyError(f"No premise found for account {self._account_id}")
         if self._meters is None:
-            self._meters = await self._api.async_get_meters(
-                self._account_id, self._premise
-            )
+            self._meters = await self._api.async_get_meters(self._account_id, self._premise)
         return self._premise, self._meters
 
-    async def _async_build_energy_data(
-        self, premise: str, meters: list[Meter]
-    ) -> EnergyData:
+    async def _async_build_energy_data(self, premise: str, meters: list[Meter]) -> EnergyData:
         today = datetime.now()
         day_from = (today - timedelta(days=_LOOKBACK_DAYS)).strftime(_DATE_FMT)
         cost_from = (today - timedelta(days=_COST_LOOKBACK_DAYS)).strftime(_DATE_FMT)
@@ -209,9 +203,7 @@ class LocalUtilityClient:
         return EnergyData(
             electricity_kwh=electric.usage if electric else None,
             gas_therms=gas.usage if gas else None,
-            electricity_cost=cost[SERVICE_ELECTRIC].cost
-            if SERVICE_ELECTRIC in cost
-            else None,
+            electricity_cost=cost[SERVICE_ELECTRIC].cost if SERVICE_ELECTRIC in cost else None,
             gas_cost=cost[SERVICE_GAS].cost if SERVICE_GAS in cost else None,
             currency=CURRENCY_USD,
             reading_dates={

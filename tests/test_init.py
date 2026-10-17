@@ -19,9 +19,7 @@ def _client() -> AsyncMock:
 async def test_setup_and_unload(hass: HomeAssistant, config_entry) -> None:
     """Setup creates the sensors and starts statistics; unload closes the client."""
     client = _client()
-    with patch(
-        "custom_components.alliant_energy.LocalUtilityClient", return_value=client
-    ):
+    with patch("custom_components.alliant_energy.LocalUtilityClient", return_value=client):
         assert await hass.config_entries.async_setup(config_entry.entry_id)
         await hass.async_block_till_done()
 
@@ -43,9 +41,7 @@ async def test_setup_retries_and_closes_client_on_failure(
     """A failed first refresh retries later and does not leak the HTTP session."""
     client = _client()
     client.async_fetch_data.side_effect = RuntimeError("down")
-    with patch(
-        "custom_components.alliant_energy.LocalUtilityClient", return_value=client
-    ):
+    with patch("custom_components.alliant_energy.LocalUtilityClient", return_value=client):
         await hass.config_entries.async_setup(config_entry.entry_id)
         await hass.async_block_till_done()
 

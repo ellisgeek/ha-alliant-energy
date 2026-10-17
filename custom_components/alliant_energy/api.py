@@ -287,9 +287,7 @@ class AlliantEnergyApi:
         """Return the accounts/premises belonging to the logged-in user."""
         if not self._user_uuid:
             raise AlliantEnergyAuthError("Not authenticated")
-        data = await self._request(
-            "GET", _SCM_SERVICE + f"Addresses/User/{self._user_uuid}"
-        )
+        data = await self._request("GET", _SCM_SERVICE + f"Addresses/User/{self._user_uuid}")
         accounts: list[Account] = []
         for raw in data.get("data") or []:
             account_number = str(raw.get("accountNumber") or "")
@@ -305,9 +303,7 @@ class AlliantEnergyApi:
             )
         return accounts
 
-    async def async_get_meters(
-        self, account_number: str, premise_number: str
-    ) -> list[Meter]:
+    async def async_get_meters(self, account_number: str, premise_number: str) -> list[Meter]:
         """Return the meters on an account/premise."""
         body = {"accountNumber": account_number, "premiseNumber": premise_number}
         data = await self._request(
@@ -403,9 +399,7 @@ class AlliantEnergyApi:
             "Uom": uom,
             "Periodicity": periodicity,
         }
-        data = await self._request(
-            "GET", _USAGE + endpoint, params=params, service="usage"
-        )
+        data = await self._request("GET", _USAGE + endpoint, params=params, service="usage")
         result = data.get("Result") or data.get("result") or {}
         records = result.get(_USAGE_RESULT_KEY[service_type]) or []
         return [_parse_reading(record, uom) for record in records]
@@ -445,9 +439,7 @@ class AlliantEnergyApi:
             headers["Authorization"] = f"Bearer {self._access_token}"
 
         # Serialize the body ourselves so it byte-for-byte matches the signature.
-        payload = (
-            json.dumps(body, separators=(",", ":")) if body is not None else None
-        )
+        payload = json.dumps(body, separators=(",", ":")) if body is not None else None
         try:
             resp = await self._session.request(
                 method, url, data=payload, params=params, headers=headers
@@ -493,7 +485,7 @@ def _to_float(value: Any) -> float | None:
         return None
     try:
         return float(value)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return None
 
 

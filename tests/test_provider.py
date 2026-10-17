@@ -49,13 +49,20 @@ def _entry(**extra):
 
 
 def _daily(usage, date):
-    return UsageReading(usage=usage, cost=0.0, reading_date=date,
-                        reading_from=None, reading_to=None, unit=None)
+    return UsageReading(
+        usage=usage, cost=0.0, reading_date=date, reading_from=None, reading_to=None, unit=None
+    )
 
 
 def _monthly(cost, period_to):
-    return UsageReading(usage=100.0, cost=cost, reading_date="0001-01-01T01:00:00",
-                        reading_from=None, reading_to=period_to, unit=None)
+    return UsageReading(
+        usage=100.0,
+        cost=cost,
+        reading_date="0001-01-01T01:00:00",
+        reading_from=None,
+        reading_to=period_to,
+        unit=None,
+    )
 
 
 def _usage_router(daily_by_service, monthly_by_service):
@@ -63,12 +70,11 @@ def _usage_router(daily_by_service, monthly_by_service):
         if periodicity == PERIODICITY_DAILY:
             return daily_by_service.get(service_type, [])
         return monthly_by_service.get(service_type, [])
+
     return _get
 
 
-async def test_fetch_data_picks_latest_usage_and_bill_cost(
-    hass: HomeAssistant, api
-) -> None:
+async def test_fetch_data_picks_latest_usage_and_bill_cost(hass: HomeAssistant, api) -> None:
     """Latest daily usage per fuel and most-recent electric bill cost are returned."""
     client = LocalUtilityClient(hass, _entry(premise_id="P1"))
     api.async_get_meters.return_value = [
@@ -101,9 +107,7 @@ async def test_fetch_data_picks_latest_usage_and_bill_cost(
     assert data.currency == "USD"
 
 
-async def test_update_statistics_delegates_to_importer(
-    hass: HomeAssistant, api
-) -> None:
+async def test_update_statistics_delegates_to_importer(hass: HomeAssistant, api) -> None:
     """The statistics method logs in, resolves context, and imports stats."""
     client = LocalUtilityClient(hass, _entry(premise_id="P1"))
     meters = [Meter("E1", "P1", SERVICE_ELECTRIC, {})]
@@ -119,9 +123,7 @@ async def test_update_statistics_delegates_to_importer(
     assert args[4] == meters
 
 
-async def test_premise_is_discovered_when_not_configured(
-    hass: HomeAssistant, api
-) -> None:
+async def test_premise_is_discovered_when_not_configured(hass: HomeAssistant, api) -> None:
     """Without a stored premise, it is resolved from the account list."""
     client = LocalUtilityClient(hass, _entry())  # no premise_id
     api.async_get_accounts.return_value = [

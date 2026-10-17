@@ -48,11 +48,10 @@ def _patch(api):
 async def test_single_account_creates_entry(hass, enable_custom_integrations) -> None:
     """One discovered account is added directly with its premise."""
     api = _mock_api(accounts=[Account("A1", "P1", {})])
-    result = await hass.config_entries.flow.async_init(
-        DOMAIN, context={"source": SOURCE_USER}
-    )
-    with _patch(api), patch(
-        "custom_components.alliant_energy.async_setup_entry", return_value=True
+    result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": SOURCE_USER})
+    with (
+        _patch(api),
+        patch("custom_components.alliant_energy.async_setup_entry", return_value=True),
     ):
         result = await hass.config_entries.flow.async_configure(
             result["flow_id"], user_input=USER_INPUT
@@ -73,9 +72,7 @@ async def test_single_account_creates_entry(hass, enable_custom_integrations) ->
 async def test_multiple_accounts_shows_picker(hass, enable_custom_integrations) -> None:
     """Several accounts prompt a selection step."""
     api = _mock_api(accounts=[Account("A1", "P1", {}), Account("A2", "P2", {})])
-    result = await hass.config_entries.flow.async_init(
-        DOMAIN, context={"source": SOURCE_USER}
-    )
+    result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": SOURCE_USER})
     with _patch(api):
         result = await hass.config_entries.flow.async_configure(
             result["flow_id"], user_input=USER_INPUT
@@ -83,8 +80,9 @@ async def test_multiple_accounts_shows_picker(hass, enable_custom_integrations) 
     assert result["type"] is FlowResultType.FORM
     assert result["step_id"] == "account"
 
-    with _patch(api), patch(
-        "custom_components.alliant_energy.async_setup_entry", return_value=True
+    with (
+        _patch(api),
+        patch("custom_components.alliant_energy.async_setup_entry", return_value=True),
     ):
         result = await hass.config_entries.flow.async_configure(
             result["flow_id"], user_input={"account_id": "A2"}
@@ -98,9 +96,7 @@ async def test_multiple_accounts_shows_picker(hass, enable_custom_integrations) 
 async def test_invalid_auth_without_tfa(hass, enable_custom_integrations) -> None:
     """A rejected login with no TFA surfaces invalid_auth."""
     api = _mock_api(login=AlliantEnergyAuthError("bad"), tfa_required=False)
-    result = await hass.config_entries.flow.async_init(
-        DOMAIN, context={"source": SOURCE_USER}
-    )
+    result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": SOURCE_USER})
     with _patch(api):
         result = await hass.config_entries.flow.async_configure(
             result["flow_id"], user_input=USER_INPUT
@@ -121,9 +117,7 @@ async def test_tfa_challenge_flow(hass, enable_custom_integrations) -> None:
         return [Account("A1", "P1", {})]
 
     api = _mock_api(accounts=accounts_side_effect, tfa_required=True)
-    result = await hass.config_entries.flow.async_init(
-        DOMAIN, context={"source": SOURCE_USER}
-    )
+    result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": SOURCE_USER})
     with _patch(api):
         result = await hass.config_entries.flow.async_configure(
             result["flow_id"], user_input=USER_INPUT
@@ -132,8 +126,9 @@ async def test_tfa_challenge_flow(hass, enable_custom_integrations) -> None:
     assert result["step_id"] == "tfa"
     api.async_send_tfa.assert_awaited_once()
 
-    with _patch(api), patch(
-        "custom_components.alliant_energy.async_setup_entry", return_value=True
+    with (
+        _patch(api),
+        patch("custom_components.alliant_energy.async_setup_entry", return_value=True),
     ):
         result = await hass.config_entries.flow.async_configure(
             result["flow_id"], user_input={"code": "123456"}
@@ -145,13 +140,9 @@ async def test_tfa_challenge_flow(hass, enable_custom_integrations) -> None:
 
 async def test_rejects_duplicate_account(hass, enable_custom_integrations) -> None:
     """The same account cannot be configured twice."""
-    MockConfigEntry(
-        domain=DOMAIN, unique_id="A1", data={"account_id": "A1"}
-    ).add_to_hass(hass)
+    MockConfigEntry(domain=DOMAIN, unique_id="A1", data={"account_id": "A1"}).add_to_hass(hass)
     api = _mock_api(accounts=[Account("A1", "P1", {})])
-    result = await hass.config_entries.flow.async_init(
-        DOMAIN, context={"source": SOURCE_USER}
-    )
+    result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": SOURCE_USER})
     with _patch(api):
         result = await hass.config_entries.flow.async_configure(
             result["flow_id"], user_input=USER_INPUT
@@ -189,8 +180,9 @@ async def test_reauth_updates_credentials(hass, enable_custom_integrations) -> N
     assert result["step_id"] == "reauth_confirm"
 
     api = _mock_api(accounts=[Account("A1", "P1", {})])
-    with _patch(api), patch(
-        "custom_components.alliant_energy.async_setup_entry", return_value=True
+    with (
+        _patch(api),
+        patch("custom_components.alliant_energy.async_setup_entry", return_value=True),
     ):
         result = await hass.config_entries.flow.async_configure(
             result["flow_id"], user_input={**USER_INPUT, "password": "new-pass"}

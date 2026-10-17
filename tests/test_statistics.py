@@ -20,13 +20,25 @@ CHICAGO = ZoneInfo("America/Chicago")
 
 
 def _hourly(reading_date, usage):
-    return UsageReading(usage=usage, cost=0.0, reading_date=reading_date,
-                        reading_from=None, reading_to=None, unit=None)
+    return UsageReading(
+        usage=usage,
+        cost=0.0,
+        reading_date=reading_date,
+        reading_from=None,
+        reading_to=None,
+        unit=None,
+    )
 
 
 def _monthly(usage, cost, start, end):
-    return UsageReading(usage=usage, cost=cost, reading_date="0001-01-01T01:00:00",
-                        reading_from=start, reading_to=end, unit=None)
+    return UsageReading(
+        usage=usage,
+        cost=cost,
+        reading_date="0001-01-01T01:00:00",
+        reading_from=start,
+        reading_to=end,
+        unit=None,
+    )
 
 
 def _api(hourly=None, monthly=None):
@@ -69,16 +81,16 @@ def test_parse_hour_localizes_wall_clock_time() -> None:
 
 async def test_fetch_hourly_dedups_and_returns_native() -> None:
     """Returns native values (unconverted), deduped, None-usage skipped."""
-    api = _api(hourly=[
-        _hourly("2026-10-07T00:00:00+01:00", 2.0),
-        _hourly("2026-10-07T01:00:00+01:00", 3.0),
-        _hourly("2026-10-07T01:00:00+01:00", 3.0),  # duplicate hour
-        _hourly("2026-10-07T02:00:00+01:00", None),  # skipped
-    ])
+    api = _api(
+        hourly=[
+            _hourly("2026-10-07T00:00:00+01:00", 2.0),
+            _hourly("2026-10-07T01:00:00+01:00", 3.0),
+            _hourly("2026-10-07T01:00:00+01:00", 3.0),  # duplicate hour
+            _hourly("2026-10-07T02:00:00+01:00", None),  # skipped
+        ]
+    )
     meter = Meter("G1", "P1", SERVICE_GAS, {})
-    with patch.object(stats, "_CHUNK_DELAY", 0), patch.object(
-        stats, "STATISTICS_BACKFILL_DAYS", 1
-    ):
+    with patch.object(stats, "_CHUNK_DELAY", 0), patch.object(stats, "STATISTICS_BACKFILL_DAYS", 1):
         rows = await stats._async_fetch_hourly(api, "acct", "P1", meter, CHICAGO)
 
     assert [v for _, v in rows] == [2.0, 3.0]  # native therms, not converted
@@ -91,10 +103,12 @@ async def test_update_meter_imports_consumption_in_kwh(hass) -> None:
     cons_id = stats.statistic_id("acct", meter)
     h0 = stats._parse_hour("2026-10-07T00:00:00+01:00", CHICAGO)
     assert h0 is not None
-    api = _api(hourly=[
-        _hourly("2026-10-07T00:00:00+01:00", 1.0),  # == last stored hour, skipped
-        _hourly("2026-10-07T01:00:00+01:00", 2.0),
-    ])
+    api = _api(
+        hourly=[
+            _hourly("2026-10-07T00:00:00+01:00", 1.0),  # == last stored hour, skipped
+            _hourly("2026-10-07T01:00:00+01:00", 2.0),
+        ]
+    )
     executor, added = _recorder({cons_id: {"start": h0.timestamp(), "sum": 100.0}})
 
     with (
@@ -124,8 +138,9 @@ async def test_update_meter_effective_electric_cost(hass) -> None:
             _hourly("2026-10-07T00:00:00+01:00", 4.0),
             _hourly("2026-10-07T01:00:00+01:00", 6.0),
         ],
-        monthly=[_monthly(100.0, 25.0, "2026-10-01T00:00:00+01:00",
-                          "2026-11-01T00:00:00+01:00")],  # rate 0.25 $/kWh
+        monthly=[
+            _monthly(100.0, 25.0, "2026-10-01T00:00:00+01:00", "2026-11-01T00:00:00+01:00")
+        ],  # rate 0.25 $/kWh
     )
     executor, added = _recorder()  # first run, sums from 0
 
@@ -149,8 +164,9 @@ async def test_update_meter_effective_gas_cost(hass) -> None:
     cost_id = stats.statistic_id("acct", meter, "_cost")
     api = _api(
         hourly=[_hourly("2026-10-07T00:00:00+01:00", 2.0)],  # 2 therms
-        monthly=[_monthly(13.0, 21.0, "2026-10-01T00:00:00+01:00",
-                          "2026-11-01T00:00:00+01:00")],  # ~1.615 $/therm
+        monthly=[
+            _monthly(13.0, 21.0, "2026-10-01T00:00:00+01:00", "2026-11-01T00:00:00+01:00")
+        ],  # ~1.615 $/therm
     )
     executor, added = _recorder()
     with (
@@ -199,8 +215,9 @@ async def test_import_through_real_recorder(recorder_mock, hass) -> None:
 
     async def _run(hours):
         api = _api(hourly=[_hourly(h, 1.0) for h in hours])
-        with patch.object(stats, "_CHUNK_DELAY", 0), patch.object(
-            stats, "STATISTICS_BACKFILL_DAYS", 1
+        with (
+            patch.object(stats, "_CHUNK_DELAY", 0),
+            patch.object(stats, "STATISTICS_BACKFILL_DAYS", 1),
         ):
             await stats.async_update_statistics(hass, api, "A1", "P1", [meter], gas_rate=2.0)
         await async_wait_recording_done(hass)

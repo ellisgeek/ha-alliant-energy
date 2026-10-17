@@ -82,9 +82,7 @@ async def async_update_statistics(
     tz = await dt_util.async_get_time_zone(hass.config.time_zone) or dt_util.UTC
     for meter in meters:
         rate = electricity_rate if meter.service_type == SERVICE_ELECTRIC else gas_rate
-        await _async_update_meter(
-            hass, api, account_number, premise_number, meter, tz, rate
-        )
+        await _async_update_meter(hass, api, account_number, premise_number, meter, tz, rate)
 
 
 async def _async_update_meter(
@@ -99,16 +97,12 @@ async def _async_update_meter(
     is_gas = meter.service_type == SERVICE_GAS
 
     # Native hourly readings (electric kWh, gas therms).
-    native = await _async_fetch_hourly(
-        api, account_number, premise_number, meter, tz
-    )
+    native = await _async_fetch_hourly(api, account_number, premise_number, meter, tz)
     if not native:
         return
 
     # Consumption is always stored in kWh.
-    consumption = [
-        (hour, value * THERM_TO_KWH if is_gas else value) for hour, value in native
-    ]
+    consumption = [(hour, value * THERM_TO_KWH if is_gas else value) for hour, value in native]
     await _async_import_series(
         hass,
         statistic_id(account_number, meter),

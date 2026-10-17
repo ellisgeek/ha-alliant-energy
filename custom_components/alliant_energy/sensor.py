@@ -151,6 +151,4 @@ class UtilitySensor(CoordinatorEntity[EnergyCoordinator], SensorEntity):
         if self._description.device_class == SensorDeviceClass.MONETARY:
             self._attr_native_unit_of_measurement = data.currency
         else:
-            self._attr_native_unit_of_measurement = (
-                self._description.native_unit_of_measurement
-            )
+            self._attr_native_unit_of_measurement = self._description.native_unit_of_measurement

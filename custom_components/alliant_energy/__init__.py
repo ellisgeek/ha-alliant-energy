@@ -45,16 +45,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: AlliantEnergyConfigEntry
     entry.async_create_background_task(
         hass, _import_statistics(), "alliant_energy_statistics_initial"
     )
-    entry.async_on_unload(
-        async_track_time_interval(hass, _import_statistics, UPDATE_INTERVAL)
-    )
+    entry.async_on_unload(async_track_time_interval(hass, _import_statistics, UPDATE_INTERVAL))
     entry.async_on_unload(entry.add_update_listener(_async_reload_on_options))
     return True
 
 
-async def _async_reload_on_options(
-    hass: HomeAssistant, entry: AlliantEnergyConfigEntry
-) -> None:
+async def _async_reload_on_options(hass: HomeAssistant, entry: AlliantEnergyConfigEntry) -> None:
     """Reload the entry when cost-rate options change."""
     await hass.config_entries.async_reload(entry.entry_id)
 
