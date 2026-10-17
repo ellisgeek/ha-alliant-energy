@@ -14,8 +14,9 @@ and SemVer's major/minor/patch split would carry little meaning.
 - bumpver (`YYYY.MM.INC0`) computes the next version and writes it to
   `pyproject.toml` and `manifest.json`. HACS shows the manifest version as the
   installed version. Do not edit versions by hand.
-- git-cliff builds `CHANGELOG.md` from Conventional Commits, so commit
-  messages are the release notes.
+- git-cliff builds `CHANGELOG.md` in Keep a Changelog format from
+  Conventional Commits, so commit subjects are the release notes. Write them
+  for users.
 - Breaking changes, such as a raised minimum Home Assistant version, go in the
   release notes, because the version number does not signal them.
 - Switching back to SemVer later is impractical: any SemVer number sorts below

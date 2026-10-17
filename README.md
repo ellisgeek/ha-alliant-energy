@@ -154,8 +154,13 @@ checks, then `scripts/release.sh`:
 1. [bumpver](https://github.com/mbarkhau/bumpver) picks the next version for
    today's date and updates `pyproject.toml` and `manifest.json`. The first
    release of an untagged version keeps the version as it is.
-2. [git-cliff](https://git-cliff.org/) regenerates `CHANGELOG.md` from the
-   Conventional Commits since the last tag.
+2. [git-cliff](https://git-cliff.org/) regenerates `CHANGELOG.md` in
+   [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format from the
+   Conventional Commits. `feat` goes under Added, `fix` under Fixed, `perf`
+   and breaking changes under Changed, and `fix(security)` under Security.
+   Commits that start with "deprecate" or "remove" go under Deprecated or
+   Removed. `docs`, `test`, `build`, `ci`, and `refactor` commits are left out
+   unless they are breaking.
 3. The script commits `build(release): <version>` and tags it.
 
 The workflow then pushes the commit and tag and publishes a GitHub release

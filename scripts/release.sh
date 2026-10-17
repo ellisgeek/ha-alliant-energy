@@ -32,6 +32,9 @@ else
 fi
 
 uv run --frozen git-cliff --tag "$version" --output CHANGELOG.md
+# git-cliff leaves an extra blank line at the end; keep exactly one newline.
+changelog="$(cat CHANGELOG.md)"
+printf '%s\n' "$changelog" > CHANGELOG.md
 if [[ -n "$notes" ]]; then
   uv run --frozen git-cliff --tag "$version" --unreleased --strip all --output "$notes"
 fi
