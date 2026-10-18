@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
+from dataclasses import replace
 from datetime import date, datetime, timedelta
+from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
@@ -26,7 +28,7 @@ from .api import (
     Meter,
     UsageReading,
 )
-from .billparser import RateCard, parse_rate_card
+from .billparser import Bill, ServiceBill, parse_bill
 from .const import (
     CONF_ACCOUNT_ID,
     CONF_ELECTRICITY_RATE,
@@ -36,11 +38,18 @@ from .const import (
     CONF_USERNAME,
     CURRENCY_USD,
 )
-from .models import EnergyData
+from .models import (
+    RATE_SOURCE_BILL,
+    RATE_SOURCE_BILLING_CYCLE,
+    RATE_SOURCE_OPTIONS,
+    EnergyData,
+    ServiceData,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
-_LOOKBACK_DAYS = 30
+# Long enough to cover the whole billing cycle in progress (about a month).
+_LOOKBACK_DAYS = 45
 _COST_LOOKBACK_DAYS = 120
 _DATE_FMT = "%m/%d/%Y"
 
@@ -62,9 +71,9 @@ class LocalUtilityClient:
         self._meters: list[Meter] | None = None
         self._premise: str | None = entry.data.get(CONF_PREMISE_ID)
         self._logged_in = False
-        # Rate card parsed from the bill PDF, cached per invoice.
-        self._rate_card: RateCard | None = None
-        self._rate_invoice: str | None = None
+        # The latest bill PDF, parsed and cached per invoice.
+        self._bill: Bill | None = None
+        self._bill_invoice: str | None = None
 
     @property
     def _account_id(self) -> str:
@@ -91,60 +100,79 @@ class LocalUtilityClient:
         """
         try:
             premise, meters = await self._async_ensure_context()
-            electric_rate, gas_rate = await self._async_resolve_rates()
+            services, _bill = await self._async_resolve_services()
             await stats.async_update_statistics(
                 self.hass,
                 self._api,
                 self._account_id,
                 premise,
                 meters,
-                electricity_rate=electric_rate,
-                gas_rate=gas_rate,
+                electricity_rate=services[SERVICE_ELECTRIC].rate,
+                gas_rate=services[SERVICE_GAS].rate,
             )
         except AlliantEnergyAuthError:
             self._logged_in = False
             raise
 
-    async def _async_resolve_rates(self) -> tuple[float | None, float | None]:
-        """Resolve the cost rate per fuel.
+    async def _async_resolve_services(
+        self, current_bill: dict[str, Any] | None = None
+    ) -> tuple[dict[str, ServiceData], Bill | None]:
+        """Resolve each service's rate and bill details.
 
-        Precedence: a static rate from options, else the marginal rate parsed
-        from the latest bill PDF, else None (the statistics importer then falls
-        back to an effective rate derived from the bill total).
+        Rate precedence: a static rate from options, else the marginal rate
+        parsed from the latest bill PDF, else None (the statistics importer then
+        falls back to an effective rate per billing cycle). Everything else
+        comes from the bill PDF.
         """
-        electric = _option_float(self.entry.options.get(CONF_ELECTRICITY_RATE))
-        gas = _option_float(self.entry.options.get(CONF_GAS_RATE))
-        if electric is not None and gas is not None:
-            return electric, gas
+        bill = await self._async_ensure_bill(current_bill)
+        services: dict[str, ServiceData] = {}
+        for service, option_key, adjustment_key in (
+            (SERVICE_ELECTRIC, CONF_ELECTRICITY_RATE, "fuel_adjustment"),
+            (SERVICE_GAS, CONF_GAS_RATE, "supply_market_adj"),
+        ):
+            section = _section(bill, service)
+            rate, source = None, None
+            if (option := _option_float(self.entry.options.get(option_key))) is not None:
+                rate, source = option, RATE_SOURCE_OPTIONS
+            elif section is not None and section.marginal_rate is not None:
+                rate, source = section.marginal_rate, RATE_SOURCE_BILL
+            if section is None:
+                services[service] = ServiceData(rate=rate, rate_source=source)
+                continue
+            services[service] = ServiceData(
+                rate=rate,
+                rate_source=source,
+                rate_plan=section.rate_plan,
+                rate_plan_name=section.rate_plan_name,
+                customer_charge_per_day=section.customer_charge_per_day,
+                adjustment=section.components.get(adjustment_key),
+                meter_number=section.meter_number,
+                meter_reading=section.meter_reading,
+                previous_meter_reading=section.previous_meter_reading,
+                meter_unit=section.meter_unit,
+                heat_factor=section.heat_factor,
+            )
+        return services, bill
 
-        card = await self._async_ensure_rate_card()
-        if card is not None:
-            if electric is None and card.electric is not None:
-                electric = card.electric.marginal_rate
-            if gas is None and card.gas is not None:
-                gas = card.gas.marginal_rate
-        return electric, gas
-
-    async def _async_ensure_rate_card(self) -> RateCard | None:
+    async def _async_ensure_bill(self, current_bill: dict[str, Any] | None = None) -> Bill | None:
         """Fetch and parse the latest bill PDF, cached per invoice (best-effort)."""
         try:
-            bill = await self._api.async_get_current_bill(self._account_id)
+            bill = current_bill or await self._api.async_get_current_bill(self._account_id)
             invoice = bill.get("invoiceId")
             if not invoice:
-                return self._rate_card
-            if invoice == self._rate_invoice:
-                return self._rate_card
+                return self._bill
+            if invoice == self._bill_invoice:
+                return self._bill
             pdf = await self._api.async_get_bill_pdf(self._account_id, invoice)
             if not pdf:
-                return self._rate_card
-            card = await self.hass.async_add_executor_job(parse_rate_card, pdf)
-            self._rate_card = card
-            self._rate_invoice = invoice
+                return self._bill
+            self._bill = await self.hass.async_add_executor_job(parse_bill, pdf)
+            self._bill_invoice = invoice
         except AlliantEnergyAuthError:
             raise
-        except Exception as err:  # noqa: BLE001 - best-effort rate parsing
-            _LOGGER.warning("Could not read rates from the bill PDF: %s", err)
-        return self._rate_card
+        except Exception as err:  # noqa: BLE001 - best-effort bill parsing
+            _LOGGER.warning("Could not read the bill PDF: %s", err)
+        return self._bill
 
     async def _async_ensure_context(self) -> tuple[str, list[Meter]]:
         if not self._logged_in:
@@ -170,6 +198,7 @@ class LocalUtilityClient:
         to_date = today.strftime(_DATE_FMT)
 
         latest: dict[str, UsageReading] = {}
+        daily_by_service: dict[str, list[UsageReading]] = {}
         cost: dict[str, UsageReading] = {}
         for meter in meters:
             daily = await self._api.async_get_usage(
@@ -181,6 +210,7 @@ class LocalUtilityClient:
                 to_date,
                 periodicity=PERIODICITY_DAILY,
             )
+            daily_by_service[meter.service_type] = daily
             if (reading := _latest(daily, _has_usage)) is not None:
                 latest[meter.service_type] = reading
 
@@ -197,6 +227,29 @@ class LocalUtilityClient:
                 cost[meter.service_type] = bill
 
         current_bill = await self._api.async_get_current_bill(self._account_id)
+        services, bill = await self._async_resolve_services(current_bill)
+        # Without a fixed or bill rate, show the latest billing cycle's
+        # effective rate, as the cost statistics use for recent hours.
+        for service, reading in cost.items():
+            data = services[service]
+            if data.rate is None and reading.cost is not None and reading.usage:
+                services[service] = replace(
+                    data,
+                    rate=reading.cost / reading.usage,
+                    rate_source=RATE_SOURCE_BILLING_CYCLE,
+                )
+        # Project each service's cost for the billing cycle in progress.
+        for service, data in services.items():
+            section = _section(bill, service)
+            if section is not None and section.period_end is not None:
+                services[service] = _project(
+                    data,
+                    daily_by_service.get(service, []),
+                    section.period_end,
+                    _expected_next_read(bill, section),
+                )
+        projected = [d.projected_cost for d in services.values() if d.projected_cost is not None]
+        period = _section(bill, SERVICE_ELECTRIC) or _section(bill, SERVICE_GAS)
 
         electric = latest.get(SERVICE_ELECTRIC)
         gas = latest.get(SERVICE_GAS)
@@ -217,6 +270,15 @@ class LocalUtilityClient:
             due_date=_parse_mdy(current_bill.get("netDueDate")),
             invoice_date=_parse_mdy(current_bill.get("invoiceDate")),
             invoice_id=current_bill.get("invoiceId"),
+            services=services,
+            billing_period_start=period.period_start if period else None,
+            billing_period_end=period.period_end if period else None,
+            billed_days=period.billed_days if period else None,
+            next_meter_read_start=bill.next_read_start if bill else None,
+            next_meter_read_end=bill.next_read_end if bill else None,
+            average_temperature=bill.average_temperature if bill else None,
+            degree_days=bill.degree_days if bill else None,
+            projected_bill=round(sum(projected), 2) if projected else None,
         )
 
 
@@ -267,3 +329,67 @@ def _latest(
     if not candidates:
         return None
     return max(candidates, key=_period_key)
+
+
+def _section(bill: Bill | None, service: str) -> ServiceBill | None:
+    if bill is None:
+        return None
+    return bill.electric if service == SERVICE_ELECTRIC else bill.gas
+
+
+def _expected_next_read(bill: Bill | None, section: ServiceBill) -> date | None:
+    """When the cycle in progress should end: the middle of the next read window.
+
+    Falls back to the last period's length when the bill has no window.
+    """
+    if bill is not None and bill.next_read_start and bill.next_read_end:
+        return bill.next_read_start + (bill.next_read_end - bill.next_read_start) / 2
+    if section.period_end is not None and section.billed_days:
+        return section.period_end + timedelta(days=section.billed_days)
+    return None
+
+
+def _project(
+    data: ServiceData,
+    daily: list[UsageReading],
+    cycle_start: date,
+    cycle_end: date | None,
+) -> ServiceData:
+    """Estimate the cost of the billing cycle in progress.
+
+    The cycle starts on the day of the last meter reading. Average daily use so
+    far is extended to the expected cycle length and priced at the service's
+    rate, plus the daily customer charge when the rate excludes it (fixed or
+    bill rate; a billing-cycle effective rate already includes it). Fees and
+    taxes are not included.
+    """
+    if data.rate is None or cycle_end is None:
+        return data
+    cycle_days = (cycle_end - cycle_start).days
+    by_day: dict[date, float] = {}
+    for reading in daily:
+        if reading.usage is None or not reading.reading_date:
+            continue
+        try:
+            day = date.fromisoformat(reading.reading_date[:10])
+        except ValueError:
+            continue
+        if day >= cycle_start:
+            by_day[day] = reading.usage
+    if not by_day or cycle_days <= 0:
+        return data
+    usage = sum(by_day.values())
+    days = len(by_day)
+    fixed = (
+        data.customer_charge_per_day or 0.0
+        if data.rate_source != RATE_SOURCE_BILLING_CYCLE
+        else 0.0
+    )
+    return replace(
+        data,
+        usage_to_date=round(usage, 3),
+        days_to_date=days,
+        cycle_days=cycle_days,
+        cost_to_date=round(usage * data.rate + fixed * days, 2),
+        projected_cost=round(usage / days * cycle_days * data.rate + fixed * cycle_days, 2),
+    )
