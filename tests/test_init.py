@@ -7,13 +7,17 @@ from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.event import async_track_time_interval
 
-from custom_components.alliant_energy.models import EnergyData
+from custom_components.alliant_energy.api import BillSummary
+from custom_components.alliant_energy.bill import Bill
+from custom_components.alliant_energy.models import EnergyData, ServiceData
 
 
 def _client() -> AsyncMock:
     client = AsyncMock()
     client.async_fetch_data.return_value = EnergyData(
-        electricity_kwh=12.5, amount_due=101.25, previous_balance=88.0, currency="USD"
+        bill=Bill(BillSummary(amount_due=101.25, previous_balance=88.0)),
+        services={"electric": ServiceData(latest_usage=12.5)},
+        currency="USD",
     )
     return client
 

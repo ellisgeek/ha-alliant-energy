@@ -5,9 +5,14 @@ from unittest.mock import AsyncMock
 from homeassistant.core import HomeAssistant
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
+from custom_components.alliant_energy.api import BillSummary
+from custom_components.alliant_energy.bill import Bill
+from custom_components.alliant_energy.billparser import ItemizedBill, ServiceBill
 from custom_components.alliant_energy.coordinator import EnergyCoordinator
 from custom_components.alliant_energy.models import EnergyData, ServiceData
 from custom_components.alliant_energy.sensor import SENSOR_DESCRIPTIONS, UtilitySensor
+
+BY_KEY = {d.key: d for d in SENSOR_DESCRIPTIONS}
 
 
 async def test_usage_sensor_exposes_reading(
@@ -15,8 +20,8 @@ async def test_usage_sensor_exposes_reading(
 ) -> None:
     """Usage sensors expose the corresponding provider value and unit."""
     coordinator = EnergyCoordinator(hass, config_entry, AsyncMock())
-    coordinator.data = EnergyData(electricity_kwh=18.4)
-    sensor = UtilitySensor(coordinator, SENSOR_DESCRIPTIONS[0], "entry-123")
+    coordinator.data = EnergyData(services={"electric": ServiceData(latest_usage=18.4)})
+    sensor = UtilitySensor(coordinator, BY_KEY["electricity_usage"], "entry-123")
 
     assert sensor.native_value == 18.4
     assert sensor.native_unit_of_measurement == "kWh"
@@ -28,8 +33,8 @@ async def test_gas_sensor_reports_therms(
 ) -> None:
     """Gas usage is reported in therms."""
     coordinator = EnergyCoordinator(hass, config_entry, AsyncMock())
-    coordinator.data = EnergyData(gas_therms=5.0)
-    sensor = UtilitySensor(coordinator, SENSOR_DESCRIPTIONS[1], "entry-123")
+    coordinator.data = EnergyData(services={"gas": ServiceData(latest_usage=5.0)})
+    sensor = UtilitySensor(coordinator, BY_KEY["gas_usage"], "entry-123")
 
     assert sensor.native_value == 5.0
     assert sensor.native_unit_of_measurement == "therm"
@@ -42,7 +47,9 @@ async def test_bill_sensors_expose_amount_and_due_date(
     from datetime import date
 
     coordinator = EnergyCoordinator(hass, config_entry, AsyncMock())
-    coordinator.data = EnergyData(amount_due=117.74, currency="USD", due_date=date(2026, 11, 2))
+    coordinator.data = EnergyData(
+        bill=Bill(BillSummary(amount_due=117.74, due_date=date(2026, 11, 2))), currency="USD"
+    )
     by_key = {d.key: d for d in SENSOR_DESCRIPTIONS}
 
     amount = UtilitySensor(coordinator, by_key["amount_due"], "e")
@@ -59,8 +66,10 @@ async def test_cost_sensor_uses_provider_currency(
 ) -> None:
     """Cost sensor unit follows the currency reported by the provider."""
     coordinator = EnergyCoordinator(hass, config_entry, AsyncMock())
-    coordinator.data = EnergyData(electricity_cost=7.25, currency="USD")
-    sensor = UtilitySensor(coordinator, SENSOR_DESCRIPTIONS[2], "entry-123")
+    coordinator.data = EnergyData(
+        services={"electric": ServiceData(last_bill_cost=7.25)}, currency="USD"
+    )
+    sensor = UtilitySensor(coordinator, BY_KEY["electricity_cost"], "entry-123")
 
     assert sensor.native_value == 7.25
     assert sensor.native_unit_of_measurement == "USD"
@@ -77,9 +86,11 @@ async def test_rate_and_rate_plan_sensors(
             "electric": ServiceData(
                 rate=0.16223,
                 rate_source="bill",
-                rate_plan="RG1",
-                rate_plan_name="Residential Electric Service",
-                customer_charge_per_day=0.526,
+                section=ServiceBill(
+                    rate_plan="RG1",
+                    rate_plan_name="Residential Electric Service",
+                    customer_charge_per_day=0.526,
+                ),
             ),
             "gas": ServiceData(rate=1.1, rate_source="options"),
         },
@@ -112,29 +123,38 @@ async def test_bill_detail_sensors(hass: HomeAssistant, config_entry: MockConfig
     from datetime import date
 
     coordinator = EnergyCoordinator(hass, config_entry, AsyncMock())
+    electric = ServiceBill(
+        meter_number="300000003",
+        meter_reading=70190,
+        previous_meter_reading=69851,
+        period_end=date(2026, 10, 12),
+        billed_days=31,
+    )
+    gas = ServiceBill(meter_reading=6207, heat_factor=1.06)
+    itemized = ItemizedBill(
+        electric=electric,
+        gas=gas,
+        next_read_start=date(2026, 11, 9),
+        next_read_end=date(2026, 11, 12),
+        average_temperature=60,
+        degree_days=157,
+    )
     coordinator.data = EnergyData(
+        bill=Bill(BillSummary(), itemized),
         currency="USD",
         services={
             "electric": ServiceData(
+                section=electric,
                 adjustment=-0.00788,
-                meter_number="300000003",
-                meter_reading=70190,
-                previous_meter_reading=69851,
                 projected_cost=62.3,
                 usage_to_date=30,
                 cost_to_date=6.44,
                 days_to_date=3,
                 cycle_days=29,
             ),
-            "gas": ServiceData(adjustment=-0.471793, meter_reading=6207, heat_factor=1.06),
+            "gas": ServiceData(section=gas, adjustment=-0.471793),
         },
         projected_bill=62.3,
-        billing_period_end=date(2026, 10, 12),
-        billed_days=31,
-        next_meter_read_start=date(2026, 11, 9),
-        next_meter_read_end=date(2026, 11, 12),
-        average_temperature=60,
-        degree_days=157,
     )
     by_key = {d.key: d for d in SENSOR_DESCRIPTIONS}
 
@@ -173,3 +193,39 @@ async def test_bill_detail_sensors(hass: HomeAssistant, config_entry: MockConfig
     assert sensor("billed_days").native_value == 31
     assert sensor("average_temperature").native_unit_of_measurement == "°F"
     assert sensor("degree_days").native_value == 157
+
+
+def test_sensor_unique_ids_never_change() -> None:
+    """A changed unique id orphans the user's entity and its history."""
+    assert sorted(d.key for d in SENSOR_DESCRIPTIONS) == sorted(
+        [
+            "electricity_usage",
+            "gas_usage",
+            "electricity_cost",
+            "gas_cost",
+            "amount_due",
+            "current_charges",
+            "past_due_amount",
+            "previous_balance",
+            "projected_bill",
+            "electricity_projected_cost",
+            "gas_projected_cost",
+            "electricity_rate",
+            "gas_rate",
+            "electricity_rate_plan",
+            "gas_rate_plan",
+            "electricity_fuel_adjustment",
+            "gas_supply_market_adjustment",
+            "electricity_meter_reading",
+            "gas_meter_reading",
+            "gas_heat_factor",
+            "billing_period_start",
+            "billing_period_end",
+            "billed_days",
+            "next_meter_read",
+            "average_temperature",
+            "degree_days",
+            "due_date",
+            "invoice_date",
+        ]
+    )

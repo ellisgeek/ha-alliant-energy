@@ -42,19 +42,19 @@ from homeassistant.components.recorder.statistics import (
     get_last_statistics,
     statistics_during_period,
 )
-from homeassistant.const import UnitOfEnergy
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.recorder import get_instance
 from homeassistant.helpers.storage import Store
 from homeassistant.util.unit_conversion import EnergyConverter
 
-from .api import SERVICE_GAS, AlliantEnergyAuthError, AlliantEnergyError, Meter
+from .api import AlliantEnergyAuthError, AlliantEnergyError, Meter
 from .const import (
     DEFAULT_MAX_HISTORY_DAYS,
     DOMAIN,
     STATISTICS_CHUNK_DAYS,
     STATISTICS_EMPTY_CHUNKS,
     STATISTICS_LAG_DAYS,
+    USAGE_UNIT,
 )
 from .rates import BillingCycle, CostRate, KnownRates, cost_identity, known_cost_rate
 from .usage import MeterUsage
@@ -221,7 +221,7 @@ def _import_usage(
     last: _Last | None,
 ) -> None:
     """Import native hourly usage (electric kWh, gas therms) as stored."""
-    unit = UnitOfEnergy.THERM if meter.service_type == SERVICE_GAS else UnitOfEnergy.KILO_WATT_HOUR
+    unit = USAGE_UNIT[meter.service_type]
     _import_series(
         hass,
         StatisticMetaData(

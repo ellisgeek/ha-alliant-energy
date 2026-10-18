@@ -1,5 +1,9 @@
 """Integration constants."""
 
+from homeassistant.const import UnitOfEnergy
+
+from .api import SERVICE_ELECTRIC, SERVICE_GAS
+
 DOMAIN = "alliant_energy"
 
 CONF_USERNAME = "username"
@@ -27,6 +31,8 @@ DEFAULT_UPDATE_INTERVAL_HOURS = 24
 
 # Alliant bills in US dollars; electric is kWh and gas is therms.
 CURRENCY_USD = "USD"
+# The unit each service's usage is stored and shown in (gas: ADR 0010).
+USAGE_UNIT = {SERVICE_ELECTRIC: UnitOfEnergy.KILO_WATT_HOUR, SERVICE_GAS: UnitOfEnergy.THERM}
 
 # Long-term statistics (Energy dashboard) settings.
 # A meter's first import walks back through the API in chunks until this many

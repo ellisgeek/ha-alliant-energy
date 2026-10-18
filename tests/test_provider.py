@@ -24,9 +24,11 @@ from custom_components.alliant_energy.billparser import (
     bill_to_dict,
 )
 from custom_components.alliant_energy.const import DOMAIN
+from custom_components.alliant_energy.coordinator import EnergyCoordinator
 from custom_components.alliant_energy.models import ServiceData
 from custom_components.alliant_energy.provider import LocalUtilityClient
 from custom_components.alliant_energy.rates import KnownRates
+from custom_components.alliant_energy.sensor import SENSOR_DESCRIPTIONS, UtilitySensor
 from custom_components.alliant_energy.usage import AlliantUsage
 
 
@@ -166,10 +168,11 @@ async def test_fetch_data_picks_latest_usage_and_bill_cost(hass: HomeAssistant, 
 
     data = await client.async_fetch_data()
 
-    assert data.electricity_kwh == 11.0
-    assert data.gas_therms == 4.0
-    assert data.electricity_cost == 75.0
-    assert data.gas_cost is None
+    electric, gas = data.services[SERVICE_ELECTRIC], data.services[SERVICE_GAS]
+    assert (electric.latest_usage, electric.latest_usage_date) == (11.0, date(2026, 10, 15))
+    assert gas.latest_usage == 4.0
+    assert electric.last_bill_cost == 75.0
+    assert gas.last_bill_cost is None
     assert data.currency == "USD"
 
 
@@ -230,12 +233,13 @@ async def test_rates_prefer_options_then_bill(hass: HomeAssistant, api, hass_sto
 
     electric = data.services[SERVICE_ELECTRIC]
     assert (electric.rate, electric.rate_source) == (0.2, "options")
-    assert electric.rate_plan == "RG1"
-    assert electric.rate_plan_name == "Residential Electric Service"
-    assert electric.customer_charge_per_day == 0.526
+    assert electric.section is not None
+    assert electric.section.rate_plan == "RG1"
+    assert electric.section.rate_plan_name == "Residential Electric Service"
+    assert electric.section.customer_charge_per_day == 0.526
     assert data.services[SERVICE_GAS].rate == pytest.approx(0.508507)
     assert data.services[SERVICE_GAS].rate_source == "bill"
-    assert data.services[SERVICE_GAS].rate_plan == "GG1"
+    assert data.services[SERVICE_GAS].section == BILL.gas
     # The bill summary is reused; bill/Current is requested once per refresh.
     api.async_get_current_bill.assert_awaited_once()
 
@@ -253,7 +257,7 @@ async def test_rate_falls_back_to_latest_billing_cycle(hass: HomeAssistant, api)
 
     assert data.services[SERVICE_ELECTRIC].rate == pytest.approx(0.22)  # $22 / 100 kWh
     assert data.services[SERVICE_ELECTRIC].rate_source == "billing_cycle"
-    assert data.services[SERVICE_ELECTRIC].rate_plan is None
+    assert data.services[SERVICE_ELECTRIC].section is None
     assert data.services[SERVICE_GAS] == ServiceData()
 
 
@@ -331,7 +335,7 @@ async def test_bill_details_and_projection(hass: HomeAssistant, api, hass_storag
 
     electric = data.services[SERVICE_ELECTRIC]
     assert electric.adjustment == pytest.approx(-0.00788)
-    assert (electric.meter_reading, electric.previous_meter_reading) == (70190, 69851)
+    assert electric.section == BILL.electric
     # Cycle Oct 12 -> Nov 10 (middle of the Nov 9-12 read window): 29 days.
     # 30 kWh in 3 days -> 290 kWh x 0.16223 + 29 x 0.526 customer charge.
     assert (electric.usage_to_date, electric.days_to_date, electric.cycle_days) == (30, 3, 29)
@@ -340,16 +344,12 @@ async def test_bill_details_and_projection(hass: HomeAssistant, api, hass_storag
     assert data.projected_bill == pytest.approx(62.30)  # no gas usage data
 
     gas = data.services[SERVICE_GAS]
-    assert gas.heat_factor == pytest.approx(1.06)
+    assert gas.section == BILL.gas
     assert gas.adjustment == pytest.approx(-0.471793)
     assert gas.projected_cost is None
 
-    assert data.billing_period_start == date(2026, 9, 11)
-    assert data.billing_period_end == date(2026, 10, 12)
-    assert data.billed_days == 31
-    assert data.next_meter_read_start == date(2026, 11, 9)
-    assert data.average_temperature == 60
-    assert data.degree_days == 157
+    assert data.billing_period == BILL.electric
+    assert data.bill.itemized == BILL
 
 
 async def test_statistics_keep_the_saved_marginal_rate_when_the_bill_summary_fails(
@@ -373,3 +373,110 @@ async def test_sensor_refresh_fails_when_the_bill_summary_fails(hass: HomeAssist
 
     with pytest.raises(AlliantEnergyError):
         await client.async_fetch_data()
+
+
+async def _all_sensors(hass: HomeAssistant, api, hass_storage) -> dict[str, tuple]:
+    """(value, unit, attributes) of every sensor after a full refresh."""
+    client = LocalUtilityClient(hass, _entry(premise_id="P1"))
+    api.async_get_meters.return_value = [
+        Meter("E1", "P1", SERVICE_ELECTRIC, {}),
+        Meter("G1", "P1", SERVICE_GAS, {}),
+    ]
+    api.async_get_usage.side_effect = _usage_router(
+        daily_by_service={
+            SERVICE_ELECTRIC: [
+                _daily(10.0, "2026-10-12T00:00:00"),
+                _daily(12.0, "2026-10-13T00:00:00"),
+            ],
+            SERVICE_GAS: [_daily(2.0, "2026-10-13T00:00:00")],
+        },
+        monthly_by_service={
+            SERVICE_ELECTRIC: [_monthly(22.0, "2026-09-11T00:00:00")],
+            SERVICE_GAS: [_monthly(90.0, "2026-09-11T00:00:00")],
+        },
+    )
+    _with_bill(api, hass_storage, client)
+    api.async_get_current_bill.return_value = BillSummary(
+        amount_due=117.74,
+        current_charges=110.0,
+        past_due_amount=0.0,
+        previous_balance=7.74,
+        due_date=date(2026, 11, 2),
+        invoice_date=date(2026, 10, 13),
+        invoice_id="INV1",
+    )
+    coordinator = EnergyCoordinator(hass, client.entry, AsyncMock())
+    coordinator.data = await client.async_fetch_data()
+    sensors = {}
+    for description in SENSOR_DESCRIPTIONS:
+        sensor = UtilitySensor(coordinator, description, "e")
+        sensors[description.key] = (
+            sensor.native_value,
+            sensor.native_unit_of_measurement,
+            sensor.extra_state_attributes,
+        )
+    return sensors
+
+
+async def test_every_sensor_after_a_full_refresh(hass: HomeAssistant, api, hass_storage) -> None:
+    """Characterizes every sensor; reshaping the data must not change what they show."""
+    sensors = await _all_sensors(hass, api, hass_storage)
+
+    assert sensors == {
+        "electricity_usage": (12.0, "kWh", None),
+        "gas_usage": (2.0, "therm", None),
+        "electricity_cost": (22.0, "USD", None),
+        "gas_cost": (90.0, "USD", None),
+        "amount_due": (117.74, "USD", None),
+        "current_charges": (110.0, "USD", None),
+        "past_due_amount": (0.0, "USD", None),
+        "previous_balance": (7.74, "USD", None),
+        "projected_bill": (109.85, "USD", {"electric": 67.01, "gas": 42.84}),
+        "electricity_projected_cost": (
+            67.01,
+            "USD",
+            {"usage_to_date": 22.0, "cost_to_date": 4.62, "days_to_date": 2, "cycle_days": 29},
+        ),
+        "gas_projected_cost": (
+            42.84,
+            "USD",
+            {"usage_to_date": 2.0, "cost_to_date": 1.48, "days_to_date": 1, "cycle_days": 29},
+        ),
+        "electricity_rate": (
+            0.16223,
+            "USD/kWh",
+            {"source": "bill", "rate_plan": "RG1", "customer_charge_per_day": 0.526},
+        ),
+        "gas_rate": (
+            0.508507,
+            "USD/thm",
+            {"source": "bill", "rate_plan": "GG1", "customer_charge_per_day": 0.4603},
+        ),
+        "electricity_rate_plan": ("RG1", None, {"name": "Residential Electric Service"}),
+        "gas_rate_plan": ("GG1", None, {"name": "Residential Gas Service"}),
+        "electricity_fuel_adjustment": (-0.00788, "USD/kWh", None),
+        "gas_supply_market_adjustment": (-0.471793, "USD/thm", None),
+        "electricity_meter_reading": (
+            70190,
+            "kWh",
+            {
+                "meter_number": "300000003",
+                "previous_reading": 69851,
+                "read_date": date(2026, 10, 12),
+            },
+        ),
+        "gas_meter_reading": (
+            6207,
+            "CCF",
+            {"meter_number": None, "previous_reading": None, "read_date": date(2026, 10, 12)},
+        ),
+        "gas_heat_factor": (1.06, None, None),
+        "billing_period_start": (date(2026, 9, 11), None, None),
+        "billing_period_end": (date(2026, 10, 12), None, None),
+        "billed_days": (31, "d", None),
+        "next_meter_read": (date(2026, 11, 9), None, {"window_end": date(2026, 11, 12)}),
+        "average_temperature": (60, "°F", None),
+        "degree_days": (157, None, None),
+        "due_date": (date(2026, 11, 2), None, None),
+        "invoice_date": (date(2026, 10, 13), None, None),
+    }
