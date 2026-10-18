@@ -4,7 +4,9 @@ Alliant Energy does not publish a customer API. Its self-service portal at
 https://myaccount.alliantenergy.com/ is a Smart Energy Water (SEW)
 "SmartCMobile" single-page app that talks to a JSON REST backend at
 ``alliant-svc.smartcmobile.com``. This module reproduces the subset of that
-backend the portal uses to read electric and gas usage.
+backend the portal uses to read electric and gas usage. The values that belong
+to one utility's deployment (host, utility id, codes) come from a
+:class:`.utility.Utility` (ADR 0015).
 
 The backend sits behind Cloudflare bot management that blocks ordinary HTTP
 clients (``aiohttp``, ``requests``, plain ``curl``) by TLS fingerprint, before
@@ -34,6 +36,8 @@ from curl_cffi.requests.exceptions import RequestException
 if TYPE_CHECKING:
     from curl_cffi.requests.session import HttpMethod
 
+    from .utility import Utility
+
 _LOGGER = logging.getLogger(__name__)
 
 # TLS fingerprint to impersonate. A recent stable Chrome is a safe default.
@@ -42,19 +46,12 @@ IMPERSONATE = "chrome"
 # Pause between consecutive requests, to keep the load on the account gentle.
 REQUEST_PAUSE_SECONDS = 0.5
 
-# Backend service roots. The portal splits its API across several hosts/paths;
-# these are the only ones needed for authentication, discovery, and usage.
-_USER_MANAGEMENT = "https://alliant-svc.smartcmobile.com/UsermanagementAPI/api/1/"
-_SCM_SERVICE = "https://alliant-svc.smartcmobile.com/Services/api/1/"
-_USAGE = "https://alliant-svc.smartcmobile.com/UsageAPI/api/V1/"
-
-# The portal tags every request with the utility id ("1" for Alliant) and, on
-# usage calls, a persona type header.
-_UTILITY_ID = "1"
-_PERSONA_TYPE = "1"
-
-_ORIGIN = "https://myaccount.alliantenergy.com"
-_REFERER = "https://myaccount.alliantenergy.com/Portal/"
+# Backend service roots, relative to the utility's host. The portal splits its
+# API across several paths; these are the only ones needed for authentication,
+# discovery, and usage.
+_USER_MANAGEMENT_PATH = "UsermanagementAPI/api/1/"
+_SCM_SERVICE_PATH = "Services/api/1/"
+_USAGE_PATH = "UsageAPI/api/V1/"
 
 # Device attributes the portal sends on auth-related calls. Left blank as a
 # generic web client; device-remembering is disabled on Alliant's deployment.
@@ -67,23 +64,12 @@ _CUSTOM_ATTRS = {
     "ip": "#1",
 }
 
-# meterType values returned by GetMeterAndPremise.
-METER_TYPE_ELECTRIC = 1
-METER_TYPE_GAS = 2
-
 SERVICE_ELECTRIC = "electric"
 SERVICE_GAS = "gas"
 
 # Usage endpoints keyed by service type, plus the response array each returns.
 _USAGE_ENDPOINT = {SERVICE_ELECTRIC: "Electric", SERVICE_GAS: "Gas"}
 _USAGE_RESULT_KEY = {SERVICE_ELECTRIC: "electricUsages", SERVICE_GAS: "gasUsages"}
-
-# Unit-of-measure query value, which depends on both the service and the
-# periodicity: hourly/daily use one spelling, billing-cycle (monthly) another.
-# Gas is the notable case — hourly needs "Therm" but billing-cycle needs "TH";
-# using the wrong one returns an empty result set rather than an error.
-_INTERVAL_UOM = {SERVICE_ELECTRIC: "kWh", SERVICE_GAS: "Therm"}
-_MONTHLY_UOM = {SERVICE_ELECTRIC: "kWh", SERVICE_GAS: "TH"}
 
 # Valid periodicity codes accepted by the usage API.
 PERIODICITY_DAILY = "DA"
@@ -179,7 +165,7 @@ def _sign(body: Any) -> str:
 
 
 class AlliantEnergyApi:
-    """Authenticated client for Alliant Energy usage data.
+    """Authenticated client for one utility's SmartCMobile backend.
 
     Owns a ``curl_cffi`` session unless one is injected (used by tests). Call
     :meth:`close` when finished if the session is owned.
@@ -191,11 +177,16 @@ class AlliantEnergyApi:
 
     def __init__(
         self,
+        utility: Utility,
         session: Any | None = None,
         pause: float | None = None,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
+        self._utility = utility
+        self._user_management = utility.api_root + _USER_MANAGEMENT_PATH
+        self._scm_service = utility.api_root + _SCM_SERVICE_PATH
+        self._usage = utility.api_root + _USAGE_PATH
         self._session = session or AsyncSession(impersonate=IMPERSONATE)
         self._owns_session = session is None
         self._pause = REQUEST_PAUSE_SECONDS if pause is None else pause
@@ -208,7 +199,7 @@ class AlliantEnergyApi:
         self._user_uuid: str | None = None
         self._tfa_required = False
         self._tfa_details: dict[str, Any] = {}
-        self._tfa_persona = "1"
+        self._tfa_persona = utility.persona_type
 
     @property
     def user_uuid(self) -> str | None:
@@ -257,7 +248,7 @@ class AlliantEnergyApi:
         }
         data = await self._request(
             "POST",
-            _USER_MANAGEMENT + "Login/auth",
+            self._user_management + "Login/auth",
             body=body,
             signed=True,
             authenticated=False,
@@ -271,7 +262,7 @@ class AlliantEnergyApi:
         body = {"refreshToken": self._refresh_token}
         data = await self._request(
             "POST",
-            _USER_MANAGEMENT + "Login/auth/refresh",
+            self._user_management + "Login/auth/refresh",
             body=body,
             signed=True,
             authenticated=False,
@@ -307,7 +298,7 @@ class AlliantEnergyApi:
             "CustomAttributes": _CUSTOM_ATTRS,
         }
         return await self._request(
-            "POST", _USER_MANAGEMENT + "users/SendTfa", body=body, service="tfa"
+            "POST", self._user_management + "users/SendTfa", body=body, service="tfa"
         )
 
     async def async_verify_tfa(self, code: str) -> dict[str, Any]:
@@ -323,14 +314,14 @@ class AlliantEnergyApi:
             "CustomAttributes": _CUSTOM_ATTRS,
         }
         return await self._request(
-            "POST", _USER_MANAGEMENT + "users/VerifyTfa", body=body, service="tfa"
+            "POST", self._user_management + "users/VerifyTfa", body=body, service="tfa"
         )
 
     async def async_get_accounts(self) -> list[Account]:
         """Return the accounts/premises belonging to the logged-in user."""
         if not self._user_uuid:
             raise AlliantEnergyAuthError("Not authenticated")
-        data = await self._request("GET", _SCM_SERVICE + f"Addresses/User/{self._user_uuid}")
+        data = await self._request("GET", self._scm_service + f"Addresses/User/{self._user_uuid}")
         accounts: list[Account] = []
         for raw in data.get("data") or []:
             account_number = str(raw.get("accountNumber") or "")
@@ -351,13 +342,13 @@ class AlliantEnergyApi:
         body = {"accountNumber": account_number, "premiseNumber": premise_number}
         data = await self._request(
             "POST",
-            _SCM_SERVICE + "Usages/GetMeterAndPremise",
+            self._scm_service + "Usages/GetMeterAndPremise",
             body=body,
             signed=True,
         )
         meters: list[Meter] = []
         for raw in data.get("data") or []:
-            service_type = _service_for_meter_type(raw.get("meterType"))
+            service_type = self._service_for_meter_type(raw.get("meterType"))
             if service_type is None:
                 continue
             meters.append(
@@ -374,7 +365,7 @@ class AlliantEnergyApi:
         """Return the bill summary of the account's most recent bill."""
         data = await self._request(
             "POST",
-            _SCM_SERVICE + "bill/Current",
+            self._scm_service + "bill/Current",
             body={"accountNumbers": [account_number]},
             signed=True,
         )
@@ -395,7 +386,7 @@ class AlliantEnergyApi:
         """Return the account's bills issued between two dates, newest first."""
         data = await self._request(
             "POST",
-            _SCM_SERVICE + "bill/History",
+            self._scm_service + "bill/History",
             body={
                 "accountNumbers": [account_number],
                 "startDate": start.strftime("%m/%d/%Y"),
@@ -420,7 +411,7 @@ class AlliantEnergyApi:
         """
         data = await self._request(
             "POST",
-            _SCM_SERVICE + "bill/GetBillPdf",
+            self._scm_service + "bill/GetBillPdf",
             body={
                 "accountNumber": account_number,
                 "invoiceId": invoice_id,
@@ -461,9 +452,9 @@ class AlliantEnergyApi:
         if unit:
             uom = unit
         elif periodicity == PERIODICITY_MONTHLY:
-            uom = _MONTHLY_UOM[service_type]
+            uom = self._utility.monthly_uom[service_type]
         else:
-            uom = _INTERVAL_UOM[service_type]
+            uom = self._utility.interval_uom[service_type]
         params = {
             "AccountNumber": f"{premise_number}-{account_number}",
             "MeterNumber": meter_number,
@@ -472,10 +463,15 @@ class AlliantEnergyApi:
             "Uom": uom,
             "Periodicity": periodicity,
         }
-        data = await self._request("GET", _USAGE + endpoint, params=params, service="usage")
+        data = await self._request("GET", self._usage + endpoint, params=params, service="usage")
         result = data.get("Result") or data.get("result") or {}
         records = result.get(_USAGE_RESULT_KEY[service_type]) or []
         return [_parse_reading(record, uom) for record in records]
+
+    def _service_for_meter_type(self, meter_type: Any) -> str | None:
+        if not isinstance(meter_type, int):
+            return None
+        return self._utility.meter_types.get(meter_type)
 
     async def _send(self, method: HttpMethod, url: str, **kwargs: Any) -> Any:
         """Send one request on the session, paced after the previous one."""
@@ -504,9 +500,9 @@ class AlliantEnergyApi:
         """Perform a request, handling signing, auth headers, and 401 refresh."""
         headers: dict[str, str] = {
             "Accept": "application/json",
-            "uid": _UTILITY_ID,
-            "Origin": _ORIGIN,
-            "Referer": _REFERER,
+            "uid": self._utility.utility_id,
+            "Origin": self._utility.portal_url,
+            "Referer": self._utility.referer,
         }
         if body is not None:
             headers["Content-Type"] = "application/json"
@@ -515,7 +511,7 @@ class AlliantEnergyApi:
             headers["x-signature"] = signature
             headers["x-inputchecksum"] = signature
         if service == "usage":
-            headers["pt"] = _PERSONA_TYPE
+            headers["pt"] = self._utility.persona_type
         elif service == "tfa":
             headers["pt"] = self._tfa_persona
         if authenticated:
@@ -553,14 +549,6 @@ class AlliantEnergyApi:
 
         _raise_for_status_code(data)
         return data
-
-
-def _service_for_meter_type(meter_type: Any) -> str | None:
-    if meter_type == METER_TYPE_ELECTRIC:
-        return SERVICE_ELECTRIC
-    if meter_type == METER_TYPE_GAS:
-        return SERVICE_GAS
-    return None
 
 
 def _to_float(value: Any) -> float | None:

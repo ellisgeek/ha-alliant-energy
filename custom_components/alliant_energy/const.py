@@ -3,8 +3,15 @@
 from homeassistant.const import UnitOfEnergy
 
 from .api import SERVICE_ELECTRIC, SERVICE_GAS
+from .billparser import parse_bill
+from .utility import ALLIANT_ENERGY
 
 DOMAIN = "alliant_energy"
+
+# The utility whose SmartCMobile deployment this integration reads, and the
+# parser for its bill PDFs (None would leave bills with their summary only).
+UTILITY = ALLIANT_ENERGY
+BILL_PARSER = parse_bill
 
 CONF_USERNAME = "username"
 CONF_PASSWORD = "password"

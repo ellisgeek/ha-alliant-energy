@@ -12,6 +12,11 @@ All requests go to `https://alliant-svc.smartcmobile.com`. Cloudflare blocks
 non-browser TLS fingerprints with HTTP 403, so requests must use `curl_cffi`
 with `impersonate="chrome"` ([ADR 0002](adr/0002-curl-cffi-for-cloudflare.md)).
 
+The host, the `uid` header, the persona type, the `meterType` values, and the
+`Uom` codes belong to Alliant's deployment of SmartCMobile; other utilities on
+the platform can have other values. The integration keeps them in
+`utility.py` ([ADR 0015](adr/0015-utility-profile-for-smartcmobile.md)).
+
 The API is split across service roots:
 
 | Root | Used for |

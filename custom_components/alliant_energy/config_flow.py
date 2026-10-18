@@ -51,6 +51,7 @@ from .const import (
     MAX_UPDATE_INTERVAL_HOURS,
     MIN_HISTORY_DAYS,
     MIN_UPDATE_INTERVAL_HOURS,
+    UTILITY,
 )
 from .options import max_history_days, update_interval
 
@@ -145,7 +146,7 @@ class AlliantEnergyConfigFlow(ConfigFlow, domain=DOMAIN):
 
     async def _async_login_and_route(self, errors: dict[str, str]) -> ConfigFlowResult | None:
         """Log in, then route to account selection, TFA, or an error."""
-        self._api = AlliantEnergyApi()
+        self._api = AlliantEnergyApi(UTILITY)
         try:
             await self._api.async_login(
                 self._credentials[CONF_USERNAME], self._credentials[CONF_PASSWORD]
