@@ -56,6 +56,7 @@ async def test_setup_retries_and_closes_client_on_failure(
 
     assert config_entry.state is ConfigEntryState.SETUP_RETRY
     client.async_close.assert_awaited_once()
+    client.async_update_statistics.assert_not_awaited()  # no bill yet to price with
 
 
 async def test_update_interval_option_applies(hass: HomeAssistant, config_entry) -> None:
@@ -90,17 +91,22 @@ async def test_each_refresh_starts_a_statistics_import_with_its_bill(
     assert client.async_fetch_data.await_count == 2  # no separate bill fetch
 
 
-async def test_failed_refresh_starts_no_statistics_import(
+async def test_failed_refresh_still_imports_with_the_last_bill(
     hass: HomeAssistant, config_entry
 ) -> None:
+    """A broken sensor endpoint must not stop the Energy dashboard's usage."""
     client = _client()
     await _setup(hass, config_entry, client)
-    client.async_fetch_data.side_effect = RuntimeError("down")
+    last_bill = client.async_fetch_data.return_value.bill
+    client.async_fetch_data.side_effect = RuntimeError("bill/Current: HTTP 500")
 
     await config_entry.runtime_data.async_refresh()
-    await hass.async_block_till_done()
+    await hass.async_block_till_done(wait_background_tasks=True)
+    await config_entry.runtime_data.async_refresh()  # failing again
+    await hass.async_block_till_done(wait_background_tasks=True)
 
-    client.async_update_statistics.assert_awaited_once()
+    assert client.async_update_statistics.await_count == 3
+    client.async_update_statistics.assert_awaited_with(last_bill)
 
 
 async def test_refresh_during_a_running_import_starts_no_second_one(

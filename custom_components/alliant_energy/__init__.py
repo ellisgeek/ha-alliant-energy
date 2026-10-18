@@ -7,11 +7,11 @@ import contextlib
 import logging
 
 from homeassistant.const import Platform
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import HomeAssistant
 
-from .bill import Bill, async_forget_bill
+from .bill import async_forget_bill
 from .coordinator import AlliantEnergyConfigEntry, EnergyCoordinator
-from .provider import AlliantEnergyAuthError, LocalUtilityClient
+from .provider import LocalUtilityClient
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -31,34 +31,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: AlliantEnergyConfigEntry
     entry.runtime_data = coordinator
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
-    async def _import_statistics(bill: Bill) -> None:
-        """Import long-term statistics; runs off the setup and refresh path."""
-        try:
-            await client.async_update_statistics(bill)
-        except AlliantEnergyAuthError:
-            entry.async_start_reauth(hass)
-        except Exception as err:  # noqa: BLE001 - best-effort, never crash the task
-            _LOGGER.warning("Alliant Energy statistics import failed: %s", err)
-
-    @callback
-    def _start_import() -> None:
-        """After each successful refresh, import statistics with its bill (ADR 0013).
-
-        A long backfill can still be running at the next refresh; that refresh
-        then imports nothing, and a later one continues from the last hour.
-        """
-        if not coordinator.last_update_success or coordinator.data is None:
-            return
-        running = coordinator.statistics_import
-        if running is not None and not running.done():
-            _LOGGER.debug("Statistics import still running; skipping this refresh")
-            return
-        coordinator.statistics_import = entry.async_create_background_task(
-            hass, _import_statistics(coordinator.data.bill), "alliant_energy_statistics"
-        )
-
-    _start_import()  # the first refresh is already done
-    entry.async_on_unload(coordinator.async_add_listener(_start_import))
     entry.async_on_unload(entry.add_update_listener(_async_reload_on_options))
     return True
 
