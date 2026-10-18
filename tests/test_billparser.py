@@ -130,3 +130,61 @@ def test_section_and_adjustment_by_service() -> None:
     assert bill.adjustment(SERVICE_GAS) == bill.gas.components["supply_market_adj"]
     assert ItemizedBill().section(SERVICE_GAS) is None
     assert ItemizedBill().adjustment(SERVICE_GAS) is None
+
+
+def test_period_ending_in_a_later_month_than_the_bill_is_from_the_year_before() -> None:
+    text = """Bill Date Jan 08, 2027
+Rate: RG1 - Residential Electric Service Billed for: 31 Days
+Nov 05 - Dec 06 300000003 1,000 900 100 kWh 1 100 kWh
+"""
+    electric = parse_bill_text(text).electric
+    assert electric is not None
+    assert electric.period_start == date(2026, 11, 5)
+    assert electric.period_end == date(2026, 12, 6)
+
+
+@pytest.mark.parametrize(
+    ("bill_date", "period"),
+    [("", "Jan 06 - Feb 06"), ("Bill Date Feb 07, 2027\n", "Jan 06 - Feb 30")],
+    ids=["no_bill_date", "impossible_date"],
+)
+def test_period_is_unknown_without_a_valid_date(bill_date: str, period: str) -> None:
+    text = f"""{bill_date}Rate: RG1 - Residential Electric Service Billed for: 31 Days
+{period} 300000003 1,000 900 100 kWh 1 100 kWh
+"""
+    electric = parse_bill_text(text).electric
+    assert electric is not None
+    assert (electric.period_start, electric.period_end) == (None, None)
+    assert electric.meter_number == "300000003"  # the rest of the line still counts
+
+
+def test_impossible_bill_date_is_unknown() -> None:
+    assert parse_bill_text("Bill Date Feb 30, 2027").bill_date is None
+
+
+def test_section_of_another_service_is_ignored() -> None:
+    """A section for a service the integration does not read keeps its charges."""
+    text = """Rate: RG1 - Residential Electric Service Billed for: 31 Days
+Energy Charge 412.000 kWhX$0.15847 $65.29
+Rate: WS1 - Water Service Billed for: 31 Days
+Energy Charge 100.000 kWhX$9.99999 $999.99
+"""
+    bill = parse_bill_text(text)
+    assert bill.electric is not None
+    assert bill.electric.components == {"energy_charge": 0.15847}
+    assert bill.gas is None
+
+
+def test_an_older_section_after_a_newer_one_does_not_replace_it() -> None:
+    text = """Bill Date Feb 07, 2027
+Rate: RG1 - Residential Electric Service Billed for: 31 Days
+Jan 06 - Feb 06 300000003 41,736 41,324 412 kWh 1 412 kWh
+Energy Charge 412.000 kWhX$0.15847 $65.29
+Rate: RG1 - Residential Electric Service Billed for: 10 Days
+Dec 27 - Jan 06 300000003 41,324 41,206 118 kWh 1 118 kWh
+Energy Charge 118.000 kWhX$0.14000 $16.52
+"""
+    electric = parse_bill_text(text).electric
+    assert electric is not None
+    assert electric.period_end == date(2027, 2, 6)
+    assert electric.marginal_rate == pytest.approx(0.15847)

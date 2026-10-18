@@ -235,6 +235,19 @@ async def test_get_meters_classifies_service_types() -> None:
     assert meters[0].meter_number == "E1"
 
 
+@pytest.mark.parametrize("meter_type", ["1", None, 1.0, [1]])
+async def test_get_meters_drops_a_meter_type_that_is_not_an_integer(meter_type) -> None:
+    api, _ = _api(
+        _FakeResponse(
+            200,
+            {"status": {"code": 200}, "data": [{"meterNumber": "X1", "meterType": meter_type}]},
+        )
+    )
+    api._access_token = "token"  # noqa: SLF001
+
+    assert await api.async_get_meters("acct", "P1") == []
+
+
 async def test_get_usage_parses_readings_and_builds_account_param() -> None:
     """Usage maps consumption/amount and sends AccountNumber as premise-account."""
     api, session = _api(
@@ -526,3 +539,123 @@ async def test_two_factor_requests_use_the_utilitys_persona_until_login_says_oth
     await api.async_send_tfa(1)
 
     assert session.calls[0]["headers"]["pt"] == "3"
+
+
+async def test_close_closes_only_a_session_the_client_created(monkeypatch) -> None:
+    closed: list[str] = []
+
+    class _OwnedSession:
+        def __init__(self, **kwargs) -> None:
+            pass
+
+        async def close(self) -> None:
+            closed.append("owned")
+
+    monkeypatch.setattr("custom_components.alliant_energy.api.AsyncSession", _OwnedSession)
+    injected, _session = _api()
+
+    await AlliantEnergyApi(ALLIANT_ENERGY).close()
+    await injected.close()  # the fake session has no close(): it must not be called
+
+    assert closed == ["owned"]
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        lambda api: api.async_refresh_token(),
+        lambda api: api.async_send_tfa(1),
+        lambda api: api.async_verify_tfa("123456"),
+        lambda api: api.async_get_accounts(),
+        lambda api: api.async_get_meters("acct", "P1"),
+    ],
+    ids=["refresh", "send_tfa", "verify_tfa", "accounts", "authenticated_request"],
+)
+async def test_calls_need_a_login_first(call) -> None:
+    """Nothing is sent without the token, refresh token, or uuid it needs."""
+    api, session = _api()
+
+    with pytest.raises(AlliantEnergyAuthError):
+        await call(api)
+
+    assert session.calls == []
+
+
+async def test_login_without_an_access_token_is_an_auth_error() -> None:
+    api, _ = _api(_FakeResponse(200, {"status": {"code": 200}, "data": {"user": {}}}))
+
+    with pytest.raises(AlliantEnergyAuthError, match="access token"):
+        await api.async_login("user", "pass")
+
+
+async def test_bill_pdf_is_none_without_a_link() -> None:
+    api, session = _api(_FakeResponse(200, {"data": {}}))
+    api._access_token = "token"  # noqa: SLF001
+
+    assert await api.async_get_bill_pdf("acct", "INV1") is None
+    assert len(session.calls) == 1  # nothing to download
+
+
+async def test_bill_pdf_download_failures_are_api_errors() -> None:
+    link = _FakeResponse(200, {"data": {"billPdf": "https://ebill.example/bill.pdf"}})
+    api, _session, _time = _paced_api(
+        link, RequestException("reset"), link, _FakeResponse(404, "gone")
+    )
+
+    with pytest.raises(AlliantEnergyError, match="reset"):
+        await api.async_get_bill_pdf("acct", "INV1")
+    with pytest.raises(AlliantEnergyError, match="HTTP 404"):
+        await api.async_get_bill_pdf("acct", "INV1")
+
+
+async def test_get_usage_rejects_an_unknown_service() -> None:
+    api, session = _api()
+
+    with pytest.raises(AlliantEnergyError, match="water"):
+        await api.async_get_usage("water", "acct", "P1", "W1", "09/01/2026", "10/15/2026")
+
+    assert session.calls == []
+
+
+@pytest.mark.parametrize(
+    ("periodicity", "unit", "expected"),
+    [("MO", None, "TH"), ("HH", None, "Therm"), ("DA", "CCF", "CCF")],
+)
+async def test_get_usage_picks_the_unit_code(periodicity, unit, expected) -> None:
+    """Gas needs "Therm" for intervals but "TH" for billing cycles; a unit overrides."""
+    api, session = _api(_FakeResponse(200, {"StatusCode": 200, "Result": {}}))
+    api._access_token = "token"  # noqa: SLF001
+
+    await api.async_get_usage(
+        SERVICE_GAS, "acct", "P1", "G1", "09/01/2026", "10/15/2026", periodicity, unit
+    )
+
+    assert session.calls[0]["params"]["Uom"] == expected
+
+
+async def test_http_error_is_an_api_error() -> None:
+    api, _ = _api(_FakeResponse(500, {"error": "boom"}))
+    api._access_token = "token"  # noqa: SLF001
+
+    with pytest.raises(AlliantEnergyError, match="HTTP 500"):
+        await api.async_get_current_bill("acct")
+
+
+async def test_invalid_json_is_an_api_error() -> None:
+    response = _FakeResponse(200, {})
+    response.text = "<html>maintenance</html>"
+    api, _ = _api(response)
+    api._access_token = "token"  # noqa: SLF001
+
+    with pytest.raises(AlliantEnergyError, match="invalid JSON"):
+        await api.async_get_current_bill("acct")
+
+
+async def test_non_auth_envelope_error_is_an_api_error() -> None:
+    api, _ = _api(_FakeResponse(200, {"status": {"code": 500, "messageCode": "E500"}}))
+    api._access_token = "token"  # noqa: SLF001
+
+    with pytest.raises(AlliantEnergyError, match="E500") as err:
+        await api.async_get_current_bill("acct")
+
+    assert not isinstance(err.value, AlliantEnergyAuthError)
