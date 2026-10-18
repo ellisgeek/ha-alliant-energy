@@ -1,3 +1,7 @@
+---
+status: superseded by ADR 0010
+---
+
 # Store gas usage statistics in kWh
 
 Alliant bills gas in therms. The Energy dashboard accepts gas only as volume

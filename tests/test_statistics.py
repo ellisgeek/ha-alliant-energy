@@ -2,11 +2,21 @@
 
 from contextlib import ExitStack
 from datetime import UTC, datetime
+from functools import partial
 from unittest.mock import AsyncMock, MagicMock, patch
 from zoneinfo import ZoneInfo
 
 import pytest
-from homeassistant.components.recorder.statistics import statistics_during_period
+from homeassistant.components.recorder.models import (
+    StatisticData,
+    StatisticMeanType,
+    StatisticMetaData,
+)
+from homeassistant.components.recorder.statistics import (
+    async_add_external_statistics,
+    get_metadata,
+    statistics_during_period,
+)
 from homeassistant.helpers.recorder import get_instance
 from pytest_homeassistant_custom_component.components.recorder.common import (
     async_wait_recording_done,
@@ -20,7 +30,7 @@ from custom_components.alliant_energy.api import (
     Meter,
     UsageReading,
 )
-from custom_components.alliant_energy.const import DOMAIN, THERM_TO_KWH
+from custom_components.alliant_energy.const import DOMAIN
 
 CHICAGO = ZoneInfo("America/Chicago")
 
@@ -77,6 +87,14 @@ async def _run_meter(hass, api, meter, rate=None, backfill_days=None) -> None:
     await async_wait_recording_done(hass)
 
 
+async def _unit(hass, stat_id) -> str | None:
+    """The unit a statistic is stored in."""
+    metadata = await get_instance(hass).async_add_executor_job(
+        partial(get_metadata, hass, statistic_ids={stat_id})
+    )
+    return metadata[stat_id][1]["unit_of_measurement"]
+
+
 async def _rows(hass, stat_id) -> list[tuple[float, float]]:
     """(state, sum) for every stored hour of a statistic, oldest first."""
 
@@ -121,8 +139,8 @@ async def test_fetch_hourly_dedups_and_returns_native() -> None:
     assert rows[0][0] < rows[1][0]
 
 
-async def test_gas_consumption_in_kwh_and_sum_continues(hass) -> None:
-    """Gas is stored in kWh; a second run adds only new hours to the sum."""
+async def test_gas_consumption_in_therms_and_sum_continues(hass) -> None:
+    """Gas is stored in native therms; a second run adds only new hours."""
     meter = Meter("G1", "P1", SERVICE_GAS, {})
     cons_id = stats.statistic_id("acct", meter)
 
@@ -132,13 +150,37 @@ async def test_gas_consumption_in_kwh_and_sum_continues(hass) -> None:
     second = ["2026-10-07T01:00:00+01:00", "2026-10-07T02:00:00+01:00"]
     await _run_meter(hass, _api(hourly=[_hourly(h, 2.0) for h in second]), meter)
 
-    assert await _rows(hass, cons_id) == pytest.approx(
-        [
-            (THERM_TO_KWH, THERM_TO_KWH),
-            (THERM_TO_KWH, 2 * THERM_TO_KWH),
-            (2 * THERM_TO_KWH, 4 * THERM_TO_KWH),
-        ]
+    assert await _rows(hass, cons_id) == pytest.approx([(1.0, 1.0), (1.0, 2.0), (2.0, 4.0)])
+    assert await _unit(hass, cons_id) == "thm"
+
+
+async def test_gas_history_in_kwh_is_reimported_in_therms(hass) -> None:
+    """A gas statistic stored in kWh by an earlier version is rebuilt in therms."""
+    meter = Meter("G1", "P1", SERVICE_GAS, {})
+    cons_id = stats.statistic_id("acct", meter)
+    hour = datetime(2026, 10, 7, 5, tzinfo=UTC)
+    async_add_external_statistics(
+        hass,
+        StatisticMetaData(
+            mean_type=StatisticMeanType.NONE,
+            has_sum=True,
+            name="old",
+            source=DOMAIN,
+            statistic_id=cons_id,
+            unit_class="energy",
+            unit_of_measurement="kWh",
+        ),
+        [StatisticData(start=hour, state=29.3001, sum=29.3001)],
     )
+    await async_wait_recording_done(hass)
+
+    hours = [_hourly(f"2026-10-07T0{h}:00:00+01:00", 1.0) for h in range(3)]
+    api = _api(hourly=hours)
+    await _run_meter(hass, api, meter, backfill_days=40)
+
+    assert await _unit(hass, cons_id) == "thm"
+    assert await _rows(hass, cons_id) == pytest.approx([(1.0, 1.0), (1.0, 2.0), (1.0, 3.0)])
+    assert len(_hh_from_dates(api)) == 2  # the full window was fetched again
 
 
 async def test_effective_electric_cost(hass) -> None:

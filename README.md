@@ -65,7 +65,7 @@ name:
 | --- | --- |
 | `Alliant Energy electric <meter>` | Hourly electricity use, in kWh |
 | `Alliant Energy electric <meter> cost` | Hourly electricity cost |
-| `Alliant Energy gas <meter>` | Hourly gas use, in kWh (see below) |
+| `Alliant Energy gas <meter>` | Hourly gas use, in therms |
 | `Alliant Energy gas <meter> cost` | Hourly gas cost |
 
 These are imported statistics, not sensors. In the Energy dashboard dialogs
@@ -102,10 +102,11 @@ they show the label "Alliant Energy" under the name.
 > To use a fixed price instead, set it in the integration's options (see
 > below).
 
-Gas is stored as energy (kWh), not volume, because the Energy dashboard does
-not accept therms. Home Assistant does not let you mix gas volume sources and
-gas energy sources. If you already track gas by volume (for example with a
-CCF or ft³ meter sensor), use one or the other.
+Gas is stored in therms, the unit on your bill. Home Assistant counts therms
+as energy, not volume, and it does not let you mix gas volume sources and gas
+energy sources. If you already track gas by volume (for example with a CCF or
+ft³ meter sensor), use one or the other. The Energy dashboard can display gas
+in a different energy unit if you prefer.
 
 Hourly data is about two days behind, so the newest days fill in on later
 updates. The dashboard shows nothing for the last day or two.
@@ -151,9 +152,11 @@ total. The **Current charges** sensor shows the real bill total. See
 
 ## Notes and limitations
 
-- **Gas is shown in kWh in the Energy dashboard.** The dashboard does not
-  accept therms, so gas is stored as energy (1 therm = 29.3001 kWh). The
-  latest-day gas sensor still uses therms.
+- **Upgrading from 2026.10.0:** that version stored gas in kWh. On the first
+  update after upgrading, the integration deletes the gas usage statistic and
+  imports it again in therms, up to a year back. Your Energy dashboard settings
+  keep working because the statistic id does not change. Gas history older
+  than a year is lost.
 - **Two-factor sign-in.** If your login has two-factor enabled, the integration
   still works. Alliant enforces it only in the web portal. Each successful
   sign-in may show up as a new device on your account.

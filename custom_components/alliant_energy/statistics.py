@@ -6,8 +6,10 @@ imported statistic, continue its running sum, and append new hours. On first run
 it backfills a window of history in gentle chunks; later runs fetch only from
 the last imported day.
 
-Gas is reported by Alliant in therms, which the Energy dashboard does not
-accept, so consumption is stored as energy in kWh (1 therm = 29.3001 kWh, exact).
+Usage is stored in the meter's native unit: kWh for electric and therms
+(``thm``) for gas, both energy units the Energy dashboard accepts. Gas history
+stored in kWh by earlier versions is cleared and re-imported in therms (see
+docs/adr/0010-store-gas-in-therms.md).
 
 Cost statistics are imported alongside consumption when a rate is available.
 The caller resolves a static or bill-PDF marginal rate per service; without one,
@@ -32,6 +34,7 @@ from homeassistant.components.recorder.models import (
 from homeassistant.components.recorder.statistics import (
     async_add_external_statistics,
     get_last_statistics,
+    get_metadata,
 )
 from homeassistant.const import UnitOfEnergy
 from homeassistant.core import HomeAssistant
@@ -51,7 +54,6 @@ from .const import (
     STATISTICS_BACKFILL_DAYS,
     STATISTICS_CHUNK_DAYS,
     STATISTICS_LAG_DAYS,
-    THERM_TO_KWH,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -103,8 +105,17 @@ async def _async_update_meter(
     cons_id = statistic_id(account_number, meter)
     cost_id = statistic_id(account_number, meter, "_cost")
 
+    unit = UnitOfEnergy.THERM if is_gas else UnitOfEnergy.KILO_WATT_HOUR
+
     rate_for = await _async_rate_fn(api, account_number, premise_number, meter, tz, static_rate)
-    cons_last = await _async_last(hass, cons_id)
+    if is_gas and await _async_stored_unit(hass, cons_id) == UnitOfEnergy.KILO_WATT_HOUR:
+        # Earlier versions stored gas in kWh. The recorder can only convert
+        # its own statistics, so clear this one and re-import it in therms.
+        _LOGGER.info("Re-importing %s in therms (previously kWh)", cons_id)
+        get_instance(hass).async_clear_statistics([cons_id])
+        cons_last = None
+    else:
+        cons_last = await _async_last(hass, cons_id)
     cost_last = await _async_last(hass, cost_id) if rate_for is not None else None
 
     # Fetch only what is still missing: from the older of the last imported
@@ -112,13 +123,11 @@ async def _async_update_meter(
     lasts = [cons_last, cost_last] if rate_for is not None else [cons_last]
     since = None if None in lasts else min(last[0] for last in lasts if last is not None)
 
-    # Native hourly readings (electric kWh, gas therms).
+    # Native hourly readings (electric kWh, gas therms), stored as they are.
     native = await _async_fetch_hourly(api, account_number, premise_number, meter, tz, since)
     if not native:
         return
 
-    # Consumption is always stored in kWh.
-    consumption = [(hour, value * THERM_TO_KWH if is_gas else value) for hour, value in native]
     await _async_import_series(
         hass,
         StatisticMetaData(
@@ -128,9 +137,9 @@ async def _async_update_meter(
             source=DOMAIN,
             statistic_id=cons_id,
             unit_class=EnergyConverter.UNIT_CLASS,
-            unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+            unit_of_measurement=unit,
         ),
-        consumption,
+        native,
         cons_last,
     )
 
@@ -217,6 +226,16 @@ def _rate_for(periods: list[_RatePeriod], hour: datetime) -> float:
     if hour < periods[0][0]:
         return periods[0][2]
     return periods[-1][2]
+
+
+async def _async_stored_unit(hass: HomeAssistant, stat_id: str) -> str | None:
+    """Return the unit a statistic is stored in, or None if it does not exist."""
+    metadata = await get_instance(hass).async_add_executor_job(
+        partial(get_metadata, hass, statistic_ids={stat_id})
+    )
+    if stat_id not in metadata:
+        return None
+    return metadata[stat_id][1]["unit_of_measurement"]
 
 
 async def _async_last(hass: HomeAssistant, stat_id: str) -> _Last | None:
