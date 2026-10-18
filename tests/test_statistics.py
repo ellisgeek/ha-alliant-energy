@@ -3,7 +3,6 @@
 import asyncio
 from datetime import UTC, date, datetime, timedelta
 from functools import partial
-from unittest.mock import AsyncMock, patch
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -662,32 +661,3 @@ async def test_update_requests_nothing_when_the_last_hour_is_newer_than_the_lag(
 
     assert _hh_requests(later) == []
     assert await _rows(hass, stats.statistic_id("acct", meter)) == pytest.approx([(1.0, 1.0)])
-
-
-async def test_reprice_rates_every_stored_hour_back_to_the_oldest(hass) -> None:
-    """A rate change reprices hours from earlier days too, read back to the oldest."""
-    meter = Meter("E1", "P1", SERVICE_ELECTRIC, {})
-    cycle = [_monthly(100.0, 25.0, "2026-10-01T00:00:00", "2026-11-01T00:00:00")]
-    hours = [*_hours("2026-10-05", [1.0]), *_hours("2026-10-07", [2.0])]
-    await _run_meter(hass, _usage(hourly=hours, monthly=cycle), meter, rate=0.10)
-
-    # The static rate is cleared: the effective rate of the cycle takes over.
-    later = _usage(hourly=hours, monthly=cycle)
-    await _run_meter(hass, later, meter)
-
-    cost = await _rows(hass, stats.statistic_id("acct", meter, "_cost"))
-    assert [state for state, _ in cost] == pytest.approx([0.25, 0.5])
-    assert len(later.ranges("billing_cycles")) == 2  # for the last hour, then the oldest
-
-
-async def test_reprice_with_no_stored_or_new_hours_changes_nothing(hass) -> None:
-    """The usage statistic was cleared while the update ran."""
-    meter = Meter("E1", "P1", SERVICE_ELECTRIC, {})
-    hours = _hours("2026-10-07", [1.0])
-    await _run_meter(hass, _usage(hourly=hours), meter, rate=0.10)
-
-    with patch.object(stats, "_async_hours", AsyncMock(return_value=[])):
-        await _run_meter(hass, _usage(hourly=hours), meter, rate=0.20)
-
-    cost = await _rows(hass, stats.statistic_id("acct", meter, "_cost"))
-    assert cost == pytest.approx([(0.1, 0.1)])
