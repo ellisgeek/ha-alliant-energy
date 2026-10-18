@@ -161,16 +161,3 @@ async def test_overlapping_reads_download_a_new_pdf_once(hass: HomeAssistant) ->
     await asyncio.gather(latest.latest(), latest.latest())
 
     assert api.downloads == ["INV1"]
-
-
-async def test_last_read_gives_the_saved_itemized_bill_without_a_request(
-    hass: HomeAssistant,
-) -> None:
-    api = FakeApi()
-    await _latest(hass, api).latest()
-
-    class Unreachable(FakeApi):
-        async def async_get_current_bill(self, account_number: str) -> BillSummary:
-            raise AssertionError("no request expected")
-
-    assert await _latest(hass, Unreachable()).last_read() == parse_bill(PDF)

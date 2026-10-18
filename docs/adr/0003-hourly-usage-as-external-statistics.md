@@ -17,3 +17,6 @@ sources.
   stay gentle on the account (see ADR 0007).
 - Imports continue from the last stored sum. Hours already imported are not
   rewritten, so a reading Alliant corrects later is not picked up.
+
+See [ADR 0013](0013-statistics-after-each-refresh.md): the import now starts after
+each sensor refresh instead of on its own timer.

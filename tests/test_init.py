@@ -1,13 +1,13 @@
 """Tests for config entry setup and unload."""
 
+import asyncio
 from datetime import timedelta
 from unittest.mock import AsyncMock, patch
 
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.event import async_track_time_interval
 
-from custom_components.alliant_energy.api import BillSummary
+from custom_components.alliant_energy.api import AlliantEnergyAuthError, BillSummary
 from custom_components.alliant_energy.bill import Bill
 from custom_components.alliant_energy.models import EnergyData, ServiceData
 
@@ -34,7 +34,10 @@ async def test_setup_and_unload(hass: HomeAssistant, config_entry) -> None:
     previous_balance = hass.states.get("sensor.alliant_energy_previous_balance")
     assert amount_due is not None and amount_due.state == "101.25"
     assert previous_balance is not None and previous_balance.state == "88.0"
-    client.async_update_statistics.assert_awaited_once()
+    # The statistics import starts after the refresh, with the bill it fetched.
+    client.async_update_statistics.assert_awaited_once_with(
+        client.async_fetch_data.return_value.bill
+    )
 
     assert await hass.config_entries.async_unload(config_entry.entry_id)
     assert config_entry.state is ConfigEntryState.NOT_LOADED
@@ -55,23 +58,84 @@ async def test_setup_retries_and_closes_client_on_failure(
     client.async_close.assert_awaited_once()
 
 
-async def test_update_interval_option_applies_to_sensors_and_statistics(
-    hass: HomeAssistant, config_entry
-) -> None:
+async def test_update_interval_option_applies(hass: HomeAssistant, config_entry) -> None:
+    """Statistics follow the sensor refresh, so one interval drives both."""
     hass.config_entries.async_update_entry(config_entry, options={"update_interval_hours": 3})
-    client = _client()
-    with (
-        patch("custom_components.alliant_energy.LocalUtilityClient", return_value=client),
-        patch(
-            "custom_components.alliant_energy.async_track_time_interval",
-            wraps=async_track_time_interval,
-        ) as track,
-    ):
+    with patch("custom_components.alliant_energy.LocalUtilityClient", return_value=_client()):
         assert await hass.config_entries.async_setup(config_entry.entry_id)
         await hass.async_block_till_done()
 
     assert config_entry.runtime_data.update_interval == timedelta(hours=3)
-    assert track.call_args.args[2] == timedelta(hours=3)
+
+
+async def _setup(hass: HomeAssistant, config_entry, client) -> None:
+    with patch("custom_components.alliant_energy.LocalUtilityClient", return_value=client):
+        assert await hass.config_entries.async_setup(config_entry.entry_id)
+        await hass.async_block_till_done()
+
+
+async def test_each_refresh_starts_a_statistics_import_with_its_bill(
+    hass: HomeAssistant, config_entry
+) -> None:
+    client = _client()
+    await _setup(hass, config_entry, client)
+    newer = EnergyData(bill=Bill(BillSummary(invoice_id="INV2")))
+    client.async_fetch_data.return_value = newer
+
+    await config_entry.runtime_data.async_refresh()
+    await hass.async_block_till_done()
+
+    assert client.async_update_statistics.await_count == 2
+    client.async_update_statistics.assert_awaited_with(newer.bill)
+    assert client.async_fetch_data.await_count == 2  # no separate bill fetch
+
+
+async def test_failed_refresh_starts_no_statistics_import(
+    hass: HomeAssistant, config_entry
+) -> None:
+    client = _client()
+    await _setup(hass, config_entry, client)
+    client.async_fetch_data.side_effect = RuntimeError("down")
+
+    await config_entry.runtime_data.async_refresh()
+    await hass.async_block_till_done()
+
+    client.async_update_statistics.assert_awaited_once()
+
+
+async def test_refresh_during_a_running_import_starts_no_second_one(
+    hass: HomeAssistant, config_entry
+) -> None:
+    """A long backfill is still running when the next refresh comes."""
+    client = _client()
+    release = asyncio.Event()
+
+    async def _import(_bill) -> None:
+        await release.wait()
+
+    client.async_update_statistics.side_effect = _import
+    await _setup(hass, config_entry, client)
+
+    await config_entry.runtime_data.async_refresh()
+    await asyncio.sleep(0)
+    assert client.async_update_statistics.await_count == 1
+
+    release.set()
+    await hass.async_block_till_done()
+    await config_entry.runtime_data.async_refresh()
+    await hass.async_block_till_done()
+    assert client.async_update_statistics.await_count == 2
+
+
+async def test_auth_error_during_import_starts_reauthentication(
+    hass: HomeAssistant, config_entry
+) -> None:
+    client = _client()
+    client.async_update_statistics.side_effect = AlliantEnergyAuthError("expired")
+    await _setup(hass, config_entry, client)
+
+    flows = hass.config_entries.flow.async_progress_by_handler("alliant_energy")
+    assert [flow["context"]["source"] for flow in flows] == ["reauth"]
 
 
 async def test_update_interval_defaults_to_a_day(hass: HomeAssistant, config_entry) -> None:

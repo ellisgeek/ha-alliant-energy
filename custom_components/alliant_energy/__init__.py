@@ -2,16 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
-from datetime import datetime
 
 from homeassistant.const import Platform
-from homeassistant.core import HomeAssistant
-from homeassistant.helpers.event import async_track_time_interval
+from homeassistant.core import HomeAssistant, callback
 
-from .bill import async_forget_bill
+from .bill import Bill, async_forget_bill
 from .coordinator import AlliantEnergyConfigEntry, EnergyCoordinator
-from .options import update_interval
 from .provider import AlliantEnergyAuthError, LocalUtilityClient
 
 _LOGGER = logging.getLogger(__name__)
@@ -32,23 +30,36 @@ async def async_setup_entry(hass: HomeAssistant, entry: AlliantEnergyConfigEntry
     entry.runtime_data = coordinator
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
-    async def _import_statistics(_now: datetime | None = None) -> None:
-        """Import long-term statistics; runs off the setup path."""
+    importing: asyncio.Task[None] | None = None
+
+    async def _import_statistics(bill: Bill) -> None:
+        """Import long-term statistics; runs off the setup and refresh path."""
         try:
-            await client.async_update_statistics()
+            await client.async_update_statistics(bill)
         except AlliantEnergyAuthError:
             entry.async_start_reauth(hass)
         except Exception as err:  # noqa: BLE001 - best-effort, never crash the task
             _LOGGER.warning("Alliant Energy statistics import failed: %s", err)
 
-    # Backfill history now (in the background so setup stays fast), then refresh
-    # on the normal interval.
-    entry.async_create_background_task(
-        hass, _import_statistics(), "alliant_energy_statistics_initial"
-    )
-    entry.async_on_unload(
-        async_track_time_interval(hass, _import_statistics, update_interval(entry))
-    )
+    @callback
+    def _start_import() -> None:
+        """After each successful refresh, import statistics with its bill (ADR 0013).
+
+        A long backfill can still be running at the next refresh; that refresh
+        then imports nothing, and a later one continues from the last hour.
+        """
+        nonlocal importing
+        if not coordinator.last_update_success or coordinator.data is None:
+            return
+        if importing is not None and not importing.done():
+            _LOGGER.debug("Statistics import still running; skipping this refresh")
+            return
+        importing = entry.async_create_background_task(
+            hass, _import_statistics(coordinator.data.bill), "alliant_energy_statistics"
+        )
+
+    _start_import()  # the first refresh is already done
+    entry.async_on_unload(coordinator.async_add_listener(_start_import))
     entry.async_on_unload(entry.add_update_listener(_async_reload_on_options))
     return True
 
