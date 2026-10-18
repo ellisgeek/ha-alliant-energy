@@ -83,7 +83,7 @@ class LatestBill:
         bill read, and the next call tries the new PDF again. Without a parser,
         the PDF is never downloaded.
         """
-        if self._parser is None:
+        if (parser := self._parser) is None:
             return Bill(await self._api.async_get_current_bill(self._account))
         async with self._lock:
             if not self._loaded:
@@ -91,21 +91,19 @@ class LatestBill:
             summary = await self._api.async_get_current_bill(self._account)
             invoice = summary.invoice_id
             if invoice and invoice != self._invoice:
-                await self._async_read_pdf(invoice)
+                await self._async_read_pdf(invoice, parser)
             return Bill(summary, self._itemized)
 
     def itemized_for(self, invoice: str) -> ItemizedBill | None:
         """The itemized bill already read for an invoice, if it is the latest."""
         return self._itemized if invoice == self._invoice else None
 
-    async def _async_read_pdf(self, invoice: str) -> None:
-        if self._parser is None:
-            return
+    async def _async_read_pdf(self, invoice: str, parser: Callable[[bytes], ItemizedBill]) -> None:
         try:
             pdf = await self._api.async_get_bill_pdf(self._account, invoice)
             if not pdf:
                 return
-            self._itemized = await self._hass.async_add_executor_job(self._parser, pdf)
+            self._itemized = await self._hass.async_add_executor_job(parser, pdf)
             self._invoice = invoice
             await self._store.async_save(
                 {
@@ -167,16 +165,18 @@ class PastBills:
         Empty without a parser for the utility's bill layout: past bills are
         then not even listed.
         """
-        if self._parser is None:
+        if (parser := self._parser) is None:
             return []
         rates = []
-        for itemized in await self._async_itemized_since(since):
+        for itemized in await self._async_itemized_since(since, parser):
             section = itemized.section(service)
             if section is not None and section.marginal_rate is not None:
                 rates.append(MarginalRate(section.marginal_rate, section.period_start))
         return rates
 
-    async def _async_itemized_since(self, since: date) -> list[ItemizedBill]:
+    async def _async_itemized_since(
+        self, since: date, parser: Callable[[bytes], ItemizedBill]
+    ) -> list[ItemizedBill]:
         async with self._lock:
             saved = await self._async_load()
             today = dt_util.now().date()
@@ -189,7 +189,7 @@ class PastBills:
                             continue  # failed earlier today; try again another day
                         read = (
                             self._latest.itemized_for(bill.invoice_id) if self._latest else None
-                        ) or await self._async_read(bill.invoice_id)
+                        ) or await self._async_read(bill.invoice_id, parser)
                         if read is None:
                             self._failed[bill.invoice_id] = today
                             continue
@@ -234,9 +234,9 @@ class PastBills:
         self._listing = (today, since, bills)
         return bills
 
-    async def _async_read(self, invoice: str) -> ItemizedBill | None:
-        if (parser := self._parser) is None:
-            return None
+    async def _async_read(
+        self, invoice: str, parser: Callable[[bytes], ItemizedBill]
+    ) -> ItemizedBill | None:
         try:
             pdf = await self._api.async_get_bill_pdf(self._account, invoice)
             if not pdf:
