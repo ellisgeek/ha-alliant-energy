@@ -288,6 +288,9 @@ The tests use `pytest-homeassistant-custom-component` with a fake HTTP session.
 They need no Alliant credentials and no network access. Do not test against a
 live account more than necessary, because failed logins can lock the account.
 
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the git workflow, live-account
+testing, and known traps.
+
 ### Releases
 
 Releases use calendar versioning in Home Assistant's format, `YYYY.M.MICRO`

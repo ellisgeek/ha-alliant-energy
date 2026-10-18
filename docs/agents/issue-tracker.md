@@ -4,6 +4,11 @@ Issues and specs for this repo live as GitHub issues. Use the `gh` CLI for all o
 
 > The repo is `ellisgeek/ha-alliant-energy`. `gh` is installed in the
 > devcontainer; run `gh auth login` once per container before using it.
+>
+> If `gh` uses a token without the `read:org` scope (for example the VS Code
+> forwarded git credential), `gh pr edit` fails with a GraphQL scope error.
+> Update pull requests through the REST API instead, for example
+> `gh api -X PATCH repos/ellisgeek/ha-alliant-energy/pulls/<n> -f title=... -F body=@body.md`.
 
 ## Conventions
 

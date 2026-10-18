@@ -18,7 +18,7 @@ The API is split across service roots:
 | --- | --- |
 | `UsermanagementAPI/api/1/` | login, token refresh, two-factor |
 | `Services/api/1/` | accounts, meters, bills |
-| `AccountManagementApi/api/1/` | account details (not used) |
+| `AccountManagementApi/api/1/` | account details (not used; see below) |
 | `UsageAPI/api/V1/` | usage readings |
 
 ### Headers
@@ -97,6 +97,15 @@ for username and password.
 `{accountNumber, premiseNumber}` returns `data[]` meters: `meterNumber`,
 `meterType` (1 = electric, 2 = gas), `premiseNumber`, `amiMeter`, `address`.
 
+### Other endpoints (not used)
+
+Seen in the portal and checked live, but not needed by the integration:
+
+- `POST AccountManagementApi/api/1/Accounts/Account` with
+  `{accountNumber, uuId}` returns account details.
+- `Services/api/1/account/GetPremises` lists premises; the request needs a
+  `Mode` field. `Addresses/User/{uuid}` above is simpler for discovery.
+
 ## Usage
 
 **`GET UsageAPI/api/V1/Electric`** and **`GET UsageAPI/api/V1/Gas`**
@@ -145,7 +154,7 @@ account totals for all services together.
 
 **`POST Services/api/1/bill/GetBillPdf`** with
 `{accountNumber, invoiceId, documentType: "BILL"}` returns `data.billPdf`, a
-signed short-lived URL on a third-party eBill host (KUBRA, `i-doxs.net`). A GET
+signed short-lived URL on a third-party eBill host (KUBRA, `secure8.i-doxs.net`). A GET
 on that URL (following redirects) returns the PDF.
 
 ### Bill PDF contents

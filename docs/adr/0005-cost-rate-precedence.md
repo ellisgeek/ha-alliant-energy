@@ -13,7 +13,8 @@ order:
 The marginal rate is preferred because it is what an extra kWh actually costs.
 The effective rate spreads fixed customer charges and fees over usage, so it
 overstates the cost of each hour (about $0.22/kWh effective against $0.17/kWh
-marginal on a residential RG-1 bill).
+marginal on a residential RG-1 bill). The marginal rate read from the bill
+matches the RG-1 energy charge Alliant publishes for Wisconsin.
 
 ## Consequences
 
