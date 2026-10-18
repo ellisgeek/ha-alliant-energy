@@ -5,9 +5,9 @@ Refines [ADR 0003](0003-hourly-usage-as-external-statistics.md).
 The statistics import ran on its own timer, on the same interval as the sensor
 refresh. Each run fetched the bill summary again, so every interval made two
 `bill/Current` requests, and the two runs handled login failures separately.
-Now the import starts as a background task after each successful sensor
-refresh, priced with the bill that refresh fetched. The history backfill still
-runs off the setup path.
+Now the import starts as a background task after each sensor refresh, priced
+with the bill that refresh fetched or, when the refresh failed, with the last
+bill fetched. The history backfill still runs off the setup path.
 
 ## Considered Options
 
@@ -18,7 +18,8 @@ runs off the setup path.
 
 - One `bill/Current` request per interval (ADR 0007), and statistics always
   use the same bill the sensors show.
-- A failed refresh imports nothing that interval. No data is lost: the next
-  import continues from the last imported hour.
+- A failed refresh still imports, so a broken sensor endpoint (such as
+  `bill/Current`) does not stop the Energy dashboard's usage. Only an auth
+  failure, or a failure before any refresh has succeeded, imports nothing.
 - A refresh that comes while an import is still running (a long backfill)
   starts no second import.
