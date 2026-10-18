@@ -4,7 +4,7 @@ build-backend = "uv_build"
 
 [project]
 name = "ha-alliant-energy"
-version = "2026.10.0"
+version = "2026.10.1"
 description = "Home Assistant integration for Alliant Energy electric and gas usage"
 requires-python = ">=3.14.2"
 dependencies = ["homeassistant>=2026.10", "curl_cffi==0.16.3"]
@@ -48,7 +48,7 @@ include = ["custom_components", "tests"]
 [tool.bumpver]
 # CalVer like Home Assistant: YYYY.M.MICRO; MICRO resets each month (ADR 0009).
 # Driven by scripts/release.sh, which also writes the changelog, commits, and tags.
-current_version = "2026.10.0"
+current_version = "2026.10.1"
 version_pattern = "YYYY.MM.INC0"
 commit = false
 tag = false
