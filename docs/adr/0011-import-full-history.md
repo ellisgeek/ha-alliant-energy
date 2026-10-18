@@ -34,3 +34,6 @@ the limit each was imported with.
 - Changing the history limit rebuilds every meter once. Raising it fetches
   older history; lowering it removes history older than the new limit, so the
   dashboard always matches the setting.
+
+See [ADR 0012](0012-price-old-hours-by-billing-cycle.md): a marginal rate covers only
+its own billing cycle and later hours, and a rate change rebuilds cost only.
