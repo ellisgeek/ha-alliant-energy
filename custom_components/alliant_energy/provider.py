@@ -8,7 +8,6 @@ dashboard, and produces the latest usage and most-recent bill cost for sensors.
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
 from dataclasses import replace
 from datetime import date, datetime, timedelta
 from typing import Any
@@ -20,15 +19,12 @@ from homeassistant.helpers.storage import Store
 
 from . import statistics as stats
 from .api import (
-    PERIODICITY_DAILY,
-    PERIODICITY_MONTHLY,
     SERVICE_ELECTRIC,
     SERVICE_GAS,
     AlliantEnergyApi,
     AlliantEnergyAuthError,
     AlliantEnergyError,
     Meter,
-    UsageReading,
 )
 from .billparser import (
     PARSER_VERSION,
@@ -50,14 +46,14 @@ from .const import (
 )
 from .models import RATE_SOURCE_BILLING_CYCLE, EnergyData, ServiceData
 from .options import max_history_days
-from .rates import KnownRates, known_cost_rate
+from .rates import BillingCycle, KnownRates, known_cost_rate
+from .usage import AlliantUsage
 
 _LOGGER = logging.getLogger(__name__)
 
 # Long enough to cover the whole billing cycle in progress (about a month).
 _LOOKBACK_DAYS = 45
 _COST_LOOKBACK_DAYS = 120
-_DATE_FMT = "%m/%d/%Y"
 
 __all__ = [
     "AlliantEnergyAuthError",
@@ -77,6 +73,7 @@ class LocalUtilityClient:
         self._meters: list[Meter] | None = None
         self._premise: str | None = entry.data.get(CONF_PREMISE_ID)
         self._logged_in = False
+        self._usage: AlliantUsage | None = None
         # The latest bill PDF, parsed and cached per invoice. Also saved to a
         # store so restarts and reloads reuse it: the PDF is downloaded only
         # when a new invoice appears, about once a month.
@@ -96,11 +93,11 @@ class LocalUtilityClient:
     async def async_fetch_data(self) -> EnergyData:
         """Return the latest usage and most-recent bill cost for sensors."""
         try:
-            premise, meters = await self._async_ensure_context()
+            usage, meters = await self._async_ensure_context()
         except AlliantEnergyAuthError:
             self._logged_in = False
             raise
-        return await self._async_build_energy_data(premise, meters)
+        return await self._async_build_energy_data(usage, meters)
 
     async def async_update_statistics(self) -> None:
         """Import hourly long-term statistics for the Energy dashboard.
@@ -109,13 +106,12 @@ class LocalUtilityClient:
         does not block config-entry setup.
         """
         try:
-            premise, meters = await self._async_ensure_context()
+            usage, meters = await self._async_ensure_context()
             bill = await self._async_ensure_bill()
             await stats.async_update_statistics(
                 self.hass,
-                self._api,
+                usage,
                 self._account_id,
-                premise,
                 meters,
                 rates=self._known_rates(bill),
                 max_history_days=max_history_days(self.entry),
@@ -207,7 +203,7 @@ class LocalUtilityClient:
         except Exception as err:  # noqa: BLE001 - a bad cache just means a new download
             _LOGGER.debug("Ignoring the saved bill: %s", err)
 
-    async def _async_ensure_context(self) -> tuple[str, list[Meter]]:
+    async def _async_ensure_context(self) -> tuple[AlliantUsage, list[Meter]]:
         if not self._logged_in:
             await self._api.async_login(
                 self.entry.data[CONF_USERNAME], self.entry.data[CONF_PASSWORD]
@@ -222,51 +218,38 @@ class LocalUtilityClient:
                 raise AlliantEnergyError(f"No premise found for account {self._account_id}")
         if self._meters is None:
             self._meters = await self._api.async_get_meters(self._account_id, self._premise)
-        return self._premise, self._meters
+        if self._usage is None:
+            self._usage = AlliantUsage(self._api, self._account_id, self._premise)
+        return self._usage, self._meters
 
-    async def _async_build_energy_data(self, premise: str, meters: list[Meter]) -> EnergyData:
-        today = datetime.now()
-        day_from = (today - timedelta(days=_LOOKBACK_DAYS)).strftime(_DATE_FMT)
-        cost_from = (today - timedelta(days=_COST_LOOKBACK_DAYS)).strftime(_DATE_FMT)
-        to_date = today.strftime(_DATE_FMT)
-
-        latest: dict[str, UsageReading] = {}
-        daily_by_service: dict[str, list[UsageReading]] = {}
-        monthly_by_service: dict[str, list[UsageReading]] = {}
-        cost: dict[str, UsageReading] = {}
+    async def _async_build_energy_data(
+        self, usage: AlliantUsage, meters: list[Meter]
+    ) -> EnergyData:
+        today = dt_util.now().date()
+        latest: dict[str, tuple[date, float]] = {}
+        daily_by_service: dict[str, list[tuple[date, float]]] = {}
+        cycles_by_service: dict[str, list[BillingCycle]] = {}
+        cost: dict[str, float] = {}
         for meter in meters:
-            daily = await self._api.async_get_usage(
-                meter.service_type,
-                self._account_id,
-                premise,
-                meter.meter_number,
-                day_from,
-                to_date,
-                periodicity=PERIODICITY_DAILY,
-            )
+            daily = await usage.daily(meter, today - timedelta(days=_LOOKBACK_DAYS), today)
             daily_by_service[meter.service_type] = daily
-            if (reading := _latest(daily, _has_usage)) is not None:
-                latest[meter.service_type] = reading
+            if daily:
+                latest[meter.service_type] = daily[-1]
 
-            monthly = await self._api.async_get_usage(
-                meter.service_type,
-                self._account_id,
-                premise,
-                meter.meter_number,
-                cost_from,
-                to_date,
-                periodicity=PERIODICITY_MONTHLY,
+            cycles = await usage.billing_cycles(
+                meter, today - timedelta(days=_COST_LOOKBACK_DAYS), today
             )
-            monthly_by_service[meter.service_type] = monthly
-            if (bill := _latest(monthly, _has_cost)) is not None:
-                cost[meter.service_type] = bill
+            cycles_by_service[meter.service_type] = cycles
+            # The newest billed cycle; a cycle at 0 is not billed yet.
+            if billed := [cycle.cost for cycle in cycles if cycle.cost]:
+                cost[meter.service_type] = billed[-1]
 
         current_bill = await self._api.async_get_current_bill(self._account_id)
         services, bill = await self._async_resolve_services(current_bill)
         # Show the cost rate the cost statistic uses for the newest hour.
         tz = dt_util.get_default_time_zone()
         for service, known in self._known_rates(bill).items():
-            cycles = stats.billing_cycles(monthly_by_service.get(service, []), tz)
+            cycles = cycles_by_service.get(service, [])
             if (rate := known_cost_rate(known, cycles, tz)) is not None:
                 value, source = rate.current
                 services[service] = replace(services[service], rate=value, rate_source=source)
@@ -286,14 +269,14 @@ class LocalUtilityClient:
         electric = latest.get(SERVICE_ELECTRIC)
         gas = latest.get(SERVICE_GAS)
         return EnergyData(
-            electricity_kwh=electric.usage if electric else None,
-            gas_therms=gas.usage if gas else None,
-            electricity_cost=cost[SERVICE_ELECTRIC].cost if SERVICE_ELECTRIC in cost else None,
-            gas_cost=cost[SERVICE_GAS].cost if SERVICE_GAS in cost else None,
+            electricity_kwh=electric[1] if electric else None,
+            gas_therms=gas[1] if gas else None,
+            electricity_cost=cost.get(SERVICE_ELECTRIC),
+            gas_cost=cost.get(SERVICE_GAS),
             currency=CURRENCY_USD,
             reading_dates={
-                SERVICE_ELECTRIC: electric.reading_date if electric else None,
-                SERVICE_GAS: gas.reading_date if gas else None,
+                SERVICE_ELECTRIC: electric[0].isoformat() if electric else None,
+                SERVICE_GAS: gas[0].isoformat() if gas else None,
             },
             amount_due=_to_float(current_bill.get("totalAmountDue")),
             current_charges=_to_float(current_bill.get("currentCharges")),
@@ -339,30 +322,6 @@ def _option_float(value: object) -> float | None:
     return rate if rate is not None and rate > 0 else None
 
 
-def _has_usage(reading: UsageReading) -> bool:
-    return reading.usage is not None
-
-
-def _has_cost(reading: UsageReading) -> bool:
-    return reading.cost is not None and reading.cost != 0
-
-
-def _period_key(reading: UsageReading) -> str:
-    """Best timestamp for ordering, ignoring the API's bogus 0001-… values."""
-    candidates = [reading.reading_to, reading.reading_date, reading.reading_from]
-    valid = [c for c in candidates if c and not c.startswith("0001")]
-    return max(valid) if valid else ""
-
-
-def _latest(
-    readings: list[UsageReading], predicate: Callable[[UsageReading], bool]
-) -> UsageReading | None:
-    candidates = [r for r in readings if predicate(r)]
-    if not candidates:
-        return None
-    return max(candidates, key=_period_key)
-
-
 def _section(bill: Bill | None, service: str) -> ServiceBill | None:
     if bill is None:
         return None
@@ -383,7 +342,7 @@ def _expected_next_read(bill: Bill | None, section: ServiceBill) -> date | None:
 
 def _project(
     data: ServiceData,
-    daily: list[UsageReading],
+    daily: list[tuple[date, float]],
     cycle_start: date,
     cycle_end: date | None,
 ) -> ServiceData:
@@ -398,16 +357,7 @@ def _project(
     if data.rate is None or cycle_end is None:
         return data
     cycle_days = (cycle_end - cycle_start).days
-    by_day: dict[date, float] = {}
-    for reading in daily:
-        if reading.usage is None or not reading.reading_date:
-            continue
-        try:
-            day = date.fromisoformat(reading.reading_date[:10])
-        except ValueError:
-            continue
-        if day >= cycle_start:
-            by_day[day] = reading.usage
+    by_day = {day: value for day, value in daily if day >= cycle_start}
     if not by_day or cycle_days <= 0:
         return data
     usage = sum(by_day.values())

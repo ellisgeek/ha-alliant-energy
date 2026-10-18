@@ -1,0 +1,147 @@
+"""Read a meter's usage readings, hiding the backend's request format.
+
+Callers ask for usage by date range and get clean values back: UTC hours for
+hourly readings, local dates for daily readings, and billing cycles. The
+backend's date strings, periodicity codes, and timestamp quirks stay here.
+"""
+
+from __future__ import annotations
+
+from datetime import date, datetime, timedelta, tzinfo
+from typing import Protocol
+
+import homeassistant.util.dt as dt_util
+
+from .api import (
+    PERIODICITY_DAILY,
+    PERIODICITY_HOURLY,
+    PERIODICITY_MONTHLY,
+    AlliantEnergyApi,
+    Meter,
+    UsageReading,
+)
+from .const import STATISTICS_CHUNK_DAYS
+from .rates import BillingCycle
+
+_DATE_FMT = "%m/%d/%Y"
+# Daily and billing-cycle requests span at most this many days each.
+_LONG_CHUNK_DAYS = 365
+
+# (UTC hour, value) points, oldest first.
+Hours = list[tuple[datetime, float]]
+
+
+class MeterUsage(Protocol):
+    """Usage readings for the meters of one account and premise."""
+
+    async def hourly(self, meter: Meter, start: date, end: date) -> Hours:
+        """Hourly usage from ``start`` through ``end`` (local dates)."""
+        ...
+
+    async def daily(self, meter: Meter, start: date, end: date) -> list[tuple[date, float]]:
+        """Daily usage from ``start`` through ``end``, oldest first."""
+        ...
+
+    async def billing_cycles(self, meter: Meter, start: date, end: date) -> list[BillingCycle]:
+        """Billing cycles reported from ``start`` through ``end``, oldest first."""
+        ...
+
+
+class AlliantUsage:
+    """Usage readings from the Alliant backend for one account and premise.
+
+    Timestamps are parsed in ``tz``, or in Home Assistant's time zone at the
+    time of each read. The API client paces the requests (ADR 0007).
+    """
+
+    def __init__(
+        self,
+        api: AlliantEnergyApi,
+        account_number: str,
+        premise_number: str,
+        tz: tzinfo | None = None,
+    ) -> None:
+        self._api = api
+        self._account = account_number
+        self._premise = premise_number
+        self._tz = tz
+
+    @property
+    def _zone(self) -> tzinfo:
+        return self._tz or dt_util.get_default_time_zone()
+
+    async def hourly(self, meter: Meter, start: date, end: date) -> Hours:
+        by_hour: dict[datetime, float] = {}
+        for reading in await self._get(
+            meter, start, end, PERIODICITY_HOURLY, STATISTICS_CHUNK_DAYS
+        ):
+            if reading.usage is None:
+                continue
+            if (hour := _parse_hour(reading.reading_date, self._zone)) is not None:
+                by_hour[hour] = reading.usage
+        return sorted(by_hour.items())
+
+    async def daily(self, meter: Meter, start: date, end: date) -> list[tuple[date, float]]:
+        by_day: dict[date, float] = {}
+        for reading in await self._get(meter, start, end, PERIODICITY_DAILY, _LONG_CHUNK_DAYS):
+            if reading.usage is None or not reading.reading_date:
+                continue
+            if reading.reading_date.startswith("0001"):  # the API's "no date"
+                continue
+            try:
+                by_day[date.fromisoformat(reading.reading_date[:10])] = reading.usage
+            except ValueError:
+                continue
+        return sorted(by_day.items())
+
+    async def billing_cycles(self, meter: Meter, start: date, end: date) -> list[BillingCycle]:
+        cycles: dict[datetime, BillingCycle] = {}  # by start: a cycle can span two requests
+        for reading in await self._get(meter, start, end, PERIODICITY_MONTHLY, _LONG_CHUNK_DAYS):
+            tz = self._zone
+            cycle_start = _parse_hour(reading.reading_from, tz)
+            cycle_end = _parse_hour(reading.reading_to, tz)
+            if cycle_start is None or cycle_end is None or cycle_start >= cycle_end:
+                continue
+            if reading.usage is None:
+                continue
+            cycles[cycle_start] = BillingCycle(cycle_start, cycle_end, reading.usage, reading.cost)
+        return sorted(cycles.values(), key=lambda cycle: cycle.start)
+
+    async def _get(
+        self, meter: Meter, start: date, end: date, periodicity: str, chunk_days: int
+    ) -> list[UsageReading]:
+        """Readings from ``start`` through ``end``, at most ``chunk_days`` days per request."""
+        readings: list[UsageReading] = []
+        chunk_start = start
+        while chunk_start <= end:
+            chunk_end = min(chunk_start + timedelta(days=chunk_days - 1), end)
+            readings.extend(
+                await self._api.async_get_usage(
+                    service_type=meter.service_type,
+                    account_number=self._account,
+                    premise_number=self._premise,
+                    meter_number=meter.meter_number,
+                    from_date=chunk_start.strftime(_DATE_FMT),
+                    to_date=chunk_end.strftime(_DATE_FMT),
+                    periodicity=periodicity,
+                )
+            )
+            chunk_start = chunk_end + timedelta(days=1)
+        return readings
+
+
+def _parse_hour(reading_date: str | None, tz: tzinfo) -> datetime | None:
+    """Parse a usage record's timestamp into a UTC hour boundary.
+
+    The API stamps timestamps with a fixed, bogus UTC offset; the wall-clock
+    time is the account's local time, so the offset is dropped and the naive
+    time is localized to the configured time zone.
+    """
+    if not reading_date or reading_date.startswith("0001"):  # the API's "no date"
+        return None
+    try:
+        parsed = datetime.fromisoformat(reading_date)
+    except ValueError:
+        return None
+    local = parsed.replace(tzinfo=tz)
+    return dt_util.as_utc(local).replace(minute=0, second=0, microsecond=0)

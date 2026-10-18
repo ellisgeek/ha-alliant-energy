@@ -1,5 +1,7 @@
 """Shared test fixtures."""
 
+from unittest.mock import patch
+
 import pytest
 from homeassistant.components.recorder import Recorder
 from homeassistant.core import HomeAssistant
@@ -20,6 +22,13 @@ def auto_recorder(recorder_mock: Recorder) -> None:
 
     Autouse so it is set up before ``hass``, as the recorder fixture requires.
     """
+
+
+@pytest.fixture(autouse=True)
+def no_request_pause():
+    """Send requests back to back; pacing has its own tests."""
+    with patch("custom_components.alliant_energy.api.REQUEST_PAUSE_SECONDS", 0):
+        yield
 
 
 @pytest.fixture

@@ -25,7 +25,6 @@ docs/adr/0012-price-old-hours-by-billing-cycle.md.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -49,16 +48,7 @@ from homeassistant.helpers.recorder import get_instance
 from homeassistant.helpers.storage import Store
 from homeassistant.util.unit_conversion import EnergyConverter
 
-from .api import (
-    PERIODICITY_HOURLY,
-    PERIODICITY_MONTHLY,
-    SERVICE_GAS,
-    AlliantEnergyApi,
-    AlliantEnergyAuthError,
-    AlliantEnergyError,
-    Meter,
-    UsageReading,
-)
+from .api import SERVICE_GAS, AlliantEnergyAuthError, AlliantEnergyError, Meter
 from .const import (
     DEFAULT_MAX_HISTORY_DAYS,
     DOMAIN,
@@ -67,17 +57,13 @@ from .const import (
     STATISTICS_LAG_DAYS,
 )
 from .rates import BillingCycle, CostRate, KnownRates, cost_identity, known_cost_rate
+from .usage import MeterUsage
 
 _LOGGER = logging.getLogger(__name__)
 
-_DATE_FMT = "%m/%d/%Y"
-# Gentle pause between history chunk requests on first-run backfill.
-_CHUNK_DELAY = 1.0
 # How far back to look for billing cycles when deriving effective rates on a
 # normal update; a full-history import looks back to its oldest hour.
 _RATE_LOOKBACK_DAYS = 400
-# Billing-cycle requests span at most this many days each.
-_RATE_CHUNK_DAYS = 365
 
 # Records which meters have their full history imported, with which history
 # limit, and which cost rate each cost statistic was priced under:
@@ -112,9 +98,8 @@ def statistic_id(account_number: str, meter: Meter, suffix: str = "") -> str:
 
 async def async_update_statistics(
     hass: HomeAssistant,
-    api: AlliantEnergyApi,
+    usage: MeterUsage,
     account_number: str,
-    premise_number: str,
     meters: list[Meter],
     rates: Mapping[str, KnownRates],
     max_history_days: int = DEFAULT_MAX_HISTORY_DAYS,
@@ -126,16 +111,13 @@ async def async_update_statistics(
     tz = await dt_util.async_get_time_zone(hass.config.time_zone) or dt_util.UTC
     for meter in meters:
         known = rates.get(meter.service_type) or KnownRates()
-        await _async_update_meter(
-            hass, api, account_number, premise_number, meter, tz, known, max_history_days
-        )
+        await _async_update_meter(hass, usage, account_number, meter, tz, known, max_history_days)
 
 
 async def _async_update_meter(
     hass: HomeAssistant,
-    api: AlliantEnergyApi,
+    usage: MeterUsage,
     account_number: str,
-    premise_number: str,
     meter: Meter,
     tz: tzinfo,
     known: KnownRates,
@@ -150,9 +132,7 @@ async def _async_update_meter(
     # (or was imported with a different history limit), or its usage
     # statistic is missing.
     if imported.full_history.get(cons_id) != max_days or cons_last is None:
-        await _async_import_full_history(
-            hass, api, account_number, premise_number, meter, tz, known, max_days
-        )
+        await _async_import_full_history(hass, usage, account_number, meter, tz, known, max_days)
         return
 
     cost_last = await _async_last(hass, cost_id)
@@ -160,15 +140,11 @@ async def _async_update_meter(
     reprice = cost_last is None or priced_with != cost_identity(known.static)
     # Cost is appended from the older of the two last imported hours.
     since = cons_last[0] if reprice or cost_last is None else min(cons_last[0], cost_last[0])
-    rate = await _async_cost_rate(
-        api, account_number, premise_number, meter, tz, known, _local_date(since, tz)
-    )
+    rate = await _async_cost_rate(usage, meter, tz, known, _local_date(since, tz))
 
     if rate is None:
         # No cost to add or reprice: import usage only, from the last usage hour.
-        native = await _async_fetch_hourly(
-            api, account_number, premise_number, meter, tz, cons_last[0]
-        )
+        native = await _async_fetch_hourly(usage, meter, tz, cons_last[0])
         _import_usage(hass, meter, cons_id, native, cons_last)
         if cost_last is not None and priced_with != _NO_RATE:
             _LOGGER.warning(
@@ -178,7 +154,7 @@ async def _async_update_meter(
             await _async_save_imported(hass, imported)
         return
 
-    native = await _async_fetch_hourly(api, account_number, premise_number, meter, tz, since)
+    native = await _async_fetch_hourly(usage, meter, tz, since)
     if not reprice:
         _import_usage(hass, meter, cons_id, native, cons_last)
         _import_cost(hass, meter, cost_id, native, rate, cost_last)
@@ -195,10 +171,7 @@ async def _async_update_meter(
         return
     oldest = hours[0][0].astimezone(tz).date()
     if oldest < _local_date(since, tz):
-        rate = (
-            await _async_cost_rate(api, account_number, premise_number, meter, tz, known, oldest)
-            or rate
-        )
+        rate = await _async_cost_rate(usage, meter, tz, known, oldest) or rate
     _LOGGER.info("Repricing the cost history of %s", cost_id)
     get_instance(hass).async_clear_statistics([cost_id])
     _import_cost(hass, meter, cost_id, hours, rate, None)
@@ -208,9 +181,8 @@ async def _async_update_meter(
 
 async def _async_import_full_history(
     hass: HomeAssistant,
-    api: AlliantEnergyApi,
+    usage: MeterUsage,
     account_number: str,
-    premise_number: str,
     meter: Meter,
     tz: tzinfo,
     known: KnownRates,
@@ -222,11 +194,11 @@ async def _async_import_full_history(
     _LOGGER.info("Importing the full hourly history for %s", cons_id)
 
     # Fetch everything before clearing, so a failed fetch keeps the old data.
-    native = await _async_fetch_history(api, account_number, premise_number, meter, tz, max_days)
+    native = await _async_fetch_history(usage, meter, tz, max_days)
     if not native:
         return
     oldest = native[0][0].astimezone(tz).date()
-    rate = await _async_cost_rate(api, account_number, premise_number, meter, tz, known, oldest)
+    rate = await _async_cost_rate(usage, meter, tz, known, oldest)
 
     # The recorder runs these in order: clear first, then the new imports.
     get_instance(hass).async_clear_statistics([cons_id, cost_id])
@@ -316,9 +288,7 @@ async def _async_save_imported(hass: HomeAssistant, imported: _Imported) -> None
 
 
 async def _async_cost_rate(
-    api: AlliantEnergyApi,
-    account_number: str,
-    premise_number: str,
+    usage: MeterUsage,
     meter: Meter,
     tz: tzinfo,
     known: KnownRates,
@@ -335,54 +305,10 @@ async def _async_cost_rate(
         known.marginal is None or known.marginal_from is None or since < known.marginal_from
     )
     if needs_cycles:
-        lookback = dt_util.now(tz).date() - timedelta(days=_RATE_LOOKBACK_DAYS)
-        cycles = await _async_billing_cycles(
-            api, account_number, premise_number, meter, tz, min(since, lookback)
-        )
+        today = dt_util.now(tz).date()
+        lookback = today - timedelta(days=_RATE_LOOKBACK_DAYS)
+        cycles = await usage.billing_cycles(meter, min(since, lookback), today)
     return known_cost_rate(known, cycles, tz)
-
-
-async def _async_billing_cycles(
-    api: AlliantEnergyApi,
-    account_number: str,
-    premise_number: str,
-    meter: Meter,
-    tz: tzinfo,
-    since: date,
-) -> list[BillingCycle]:
-    """Read a meter's billing cycles since a date, a year per request."""
-    cycles: dict[datetime, BillingCycle] = {}  # by start: a cycle can span two requests
-    chunk_end = dt_util.now(tz).date()
-    first = True
-    while chunk_end >= since:
-        chunk_start = max(chunk_end - timedelta(days=_RATE_CHUNK_DAYS), since)
-        if not first:
-            await asyncio.sleep(_CHUNK_DELAY)
-        first = False
-        readings = await api.async_get_usage(
-            meter.service_type,
-            account_number,
-            premise_number,
-            meter.meter_number,
-            chunk_start.strftime(_DATE_FMT),
-            chunk_end.strftime(_DATE_FMT),
-            periodicity=PERIODICITY_MONTHLY,
-        )
-        cycles.update((cycle.start, cycle) for cycle in billing_cycles(readings, tz))
-        chunk_end = chunk_start - timedelta(days=1)
-    return sorted(cycles.values(), key=lambda cycle: cycle.start)
-
-
-def billing_cycles(readings: list[UsageReading], tz: tzinfo) -> list[BillingCycle]:
-    """Billing cycles from billing-cycle usage readings, skipping unusable ones."""
-    cycles: dict[datetime, BillingCycle] = {}
-    for reading in readings:
-        start = _parse_hour(reading.reading_from, tz)
-        end = _parse_hour(reading.reading_to, tz)
-        if start is None or end is None or start >= end or reading.usage is None:
-            continue
-        cycles[start] = BillingCycle(start, end, reading.usage, reading.cost)
-    return sorted(cycles.values(), key=lambda cycle: cycle.start)
 
 
 def _local_date(timestamp: float, tz: tzinfo) -> date:
@@ -438,55 +364,34 @@ def _import_series(
 
 
 async def _async_fetch_hourly(
-    api: AlliantEnergyApi,
-    account_number: str,
-    premise_number: str,
+    usage: MeterUsage,
     meter: Meter,
     tz: tzinfo,
     since: float,
-) -> list[tuple[datetime, float]]:
-    """Fetch hourly readings forward from the last imported hour, in chunks.
+) -> _Hours:
+    """Fetch hourly usage forward from the last imported hour.
 
     ``since`` is the last imported hour (UTC timestamp); fetching restarts at
-    its local date so a partly reported day is completed. Returns a sorted list
-    of (UTC hour, native value) in the meter's native unit.
+    its local date so a partly reported day is completed.
     """
-    start_date = datetime.fromtimestamp(since, tz).date()
+    start_date = _local_date(since, tz)
     end_date = (dt_util.now(tz) - timedelta(days=STATISTICS_LAG_DAYS)).date()
-
-    by_hour: dict[datetime, float] = {}
-    chunk_start = start_date
-    first = True
-    while chunk_start <= end_date:
-        chunk_end = min(chunk_start + timedelta(days=STATISTICS_CHUNK_DAYS), end_date)
-        if not first:
-            await asyncio.sleep(_CHUNK_DELAY)
-        first = False
-        _collect(
-            await _async_get_hourly(
-                api, account_number, premise_number, meter, chunk_start, chunk_end
-            ),
-            tz,
-            by_hour,
-        )
-        chunk_start = chunk_end + timedelta(days=1)
-    return sorted(by_hour.items())
+    if start_date > end_date:
+        return []
+    return await usage.hourly(meter, start_date, end_date)
 
 
 async def _async_fetch_history(
-    api: AlliantEnergyApi,
-    account_number: str,
-    premise_number: str,
+    usage: MeterUsage,
     meter: Meter,
     tz: tzinfo,
     max_days: int = DEFAULT_MAX_HISTORY_DAYS,
-) -> list[tuple[datetime, float]]:
+) -> _Hours:
     """Fetch every hourly reading the API has, walking back in chunks.
 
     Stops after ``STATISTICS_EMPTY_CHUNKS`` chunks in a row with no data (so a
     short gap, such as a meter swap, does not end the history), or at
-    ``max_days`` back (the history limit option). Returns a sorted list of (UTC
-    hour, native value).
+    ``max_days`` back (the history limit option).
     """
     now = dt_util.now(tz)
     oldest = (now - timedelta(days=max_days)).date()
@@ -494,16 +399,10 @@ async def _async_fetch_history(
 
     by_hour: dict[datetime, float] = {}
     empty = 0
-    first = True
     while chunk_end >= oldest and empty < STATISTICS_EMPTY_CHUNKS:
-        chunk_start = max(chunk_end - timedelta(days=STATISTICS_CHUNK_DAYS), oldest)
-        if not first:
-            await asyncio.sleep(_CHUNK_DELAY)
-        first = False
+        chunk_start = max(chunk_end - timedelta(days=STATISTICS_CHUNK_DAYS - 1), oldest)
         try:
-            readings = await _async_get_hourly(
-                api, account_number, premise_number, meter, chunk_start, chunk_end
-            )
+            hours = await usage.hourly(meter, chunk_start, chunk_end)
         except AlliantEnergyAuthError:
             raise
         except AlliantEnergyError as err:
@@ -518,55 +417,7 @@ async def _async_fetch_history(
                 err,
             )
             break
-        empty = 0 if _collect(readings, tz, by_hour) else empty + 1
+        by_hour.update(hours)
+        empty = 0 if hours else empty + 1
         chunk_end = chunk_start - timedelta(days=1)
     return sorted(by_hour.items())
-
-
-async def _async_get_hourly(
-    api: AlliantEnergyApi,
-    account_number: str,
-    premise_number: str,
-    meter: Meter,
-    start: date,
-    end: date,
-) -> list[UsageReading]:
-    return await api.async_get_usage(
-        meter.service_type,
-        account_number,
-        premise_number,
-        meter.meter_number,
-        start.strftime(_DATE_FMT),
-        end.strftime(_DATE_FMT),
-        periodicity=PERIODICITY_HOURLY,
-    )
-
-
-def _collect(readings: list[UsageReading], tz: tzinfo, by_hour: dict[datetime, float]) -> int:
-    """Add readings to ``by_hour`` (de-duplicating hours); return how many had usage."""
-    count = 0
-    for reading in readings:
-        if reading.usage is None:
-            continue
-        hour = _parse_hour(reading.reading_date, tz)
-        if hour is not None:
-            by_hour[hour] = reading.usage
-            count += 1
-    return count
-
-
-def _parse_hour(reading_date: str | None, tz: tzinfo) -> datetime | None:
-    """Parse a usage record's timestamp into a UTC hour boundary.
-
-    The API stamps timestamps with a fixed, bogus UTC offset; the wall-clock
-    time is the account's local time, so the offset is dropped and the naive
-    time is localized to the configured time zone.
-    """
-    if not reading_date:
-        return None
-    try:
-        parsed = datetime.fromisoformat(reading_date)
-    except ValueError:
-        return None
-    local = parsed.replace(tzinfo=tz)
-    return dt_util.as_utc(local).replace(minute=0, second=0, microsecond=0)
