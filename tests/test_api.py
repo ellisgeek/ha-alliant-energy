@@ -18,10 +18,13 @@ from curl_cffi.requests.exceptions import RequestException
 from custom_components.alliant_energy.api import (
     SERVICE_ELECTRIC,
     SERVICE_GAS,
+    Account,
     AlliantEnergyApi,
     AlliantEnergyAuthError,
     AlliantEnergyError,
     BillSummary,
+    Meter,
+    UsageReading,
     _sign,
 )
 from custom_components.alliant_energy.utility import ALLIANT_ENERGY
@@ -478,10 +481,11 @@ async def test_empty_current_bill_is_an_empty_summary() -> None:
 
 async def test_close_closes_only_a_session_the_client_created(monkeypatch) -> None:
     closed: list[str] = []
+    created: list[dict] = []
 
     class _OwnedSession:
         def __init__(self, **kwargs) -> None:
-            pass
+            created.append(kwargs)
 
         async def close(self) -> None:
             closed.append("owned")
@@ -493,6 +497,7 @@ async def test_close_closes_only_a_session_the_client_created(monkeypatch) -> No
     await injected.close()  # the fake session has no close(): it must not be called
 
     assert closed == ["owned"]
+    assert created == [{"impersonate": "chrome"}]  # Cloudflare checks the TLS fingerprint
 
 
 @pytest.mark.parametrize(
@@ -594,3 +599,417 @@ async def test_non_auth_envelope_error_is_an_api_error() -> None:
         await api.async_get_current_bill("acct")
 
     assert not isinstance(err.value, AlliantEnergyAuthError)
+
+
+# Every request exactly as the portal sends it (docs/backend-api.md). The
+# backend is private and undocumented, so a changed field name, header, or path
+# fails silently in production; these pin each one.
+_ROOT = "https://alliant-svc.smartcmobile.com/"
+_HEADERS = {
+    "Accept": "application/json",
+    "uid": "1",
+    "Origin": "https://myaccount.alliantenergy.com",
+    "Referer": "https://myaccount.alliantenergy.com/Portal/",
+}
+_DEVICE = {
+    "deviceId": "",
+    "deviceName": "",
+    "client": "Web",
+    "version": "1.0",
+    "os": "",
+    "ip": "#1",
+}
+_OK = {"status": {"code": 200}}
+
+
+def _body(body: dict) -> str:
+    return json.dumps(body, separators=(",", ":"))
+
+
+def _signed(body: dict) -> dict[str, str]:
+    signature = _sign(body)
+    return {"x-signature": signature, "x-inputchecksum": signature}
+
+
+def _post(path: str, body: dict, *, signed: bool = True, auth: bool = True, **headers) -> dict:
+    return {
+        "method": "POST",
+        "url": _ROOT + path,
+        "data": _body(body),
+        "params": None,
+        "headers": {
+            **_HEADERS,
+            "Content-Type": "application/json",
+            **(_signed(body) if signed else {}),
+            **headers,
+            **({"Authorization": "Bearer token"} if auth else {}),
+        },
+    }
+
+
+def _get(path: str, params: dict | None = None, **headers) -> dict:
+    return {
+        "method": "GET",
+        "url": _ROOT + path,
+        "data": None,
+        "params": params,
+        "headers": {**_HEADERS, **headers, "Authorization": "Bearer token"},
+    }
+
+
+_LOGIN_BODY = {
+    "username": "user",
+    "password": "pass",
+    "guestToken": "",
+    "customattributes": {
+        "ip": "#1",
+        "client": "Web",
+        "version": "1.0",
+        "deviceId": "",
+        "deviceName": "",
+        "deviceType": 0,
+        "os": "",
+    },
+}
+_TOKENS = {**_OK, "data": {"accessToken": "token", "refreshToken": "r"}}
+
+WIRE_CASES = [
+    pytest.param(
+        lambda api: api.async_login("user", "pass"),
+        [_TOKENS],
+        [_post("UsermanagementAPI/api/1/Login/auth", _LOGIN_BODY, auth=False)],
+        id="login",
+    ),
+    pytest.param(
+        lambda api: api.async_refresh_token(),
+        [_TOKENS],
+        [
+            _post(
+                "UsermanagementAPI/api/1/Login/auth/refresh",
+                {"refreshToken": "refresh"},
+                auth=False,
+            )
+        ],
+        id="refresh",
+    ),
+    pytest.param(
+        lambda api: api.async_send_tfa(2),
+        [_OK],
+        [
+            _post(
+                "UsermanagementAPI/api/1/users/SendTfa",
+                {"uuid": "u-1", "mode": 2, "CustomAttributes": _DEVICE},
+                signed=False,
+                pt="1",
+            )
+        ],
+        id="send_tfa",
+    ),
+    pytest.param(
+        lambda api: api.async_verify_tfa("654321"),
+        [_OK],
+        [
+            _post(
+                "UsermanagementAPI/api/1/users/VerifyTfa",
+                {"uuid": "u-1", "code": "654321", "CustomAttributes": _DEVICE},
+                signed=False,
+                pt="1",
+            )
+        ],
+        id="verify_tfa",
+    ),
+    pytest.param(
+        lambda api: api.async_get_accounts(),
+        [{**_OK, "data": []}],
+        [_get("Services/api/1/Addresses/User/u-1")],
+        id="accounts",
+    ),
+    pytest.param(
+        lambda api: api.async_get_meters("A1", "P1"),
+        [{**_OK, "data": []}],
+        [
+            _post(
+                "Services/api/1/Usages/GetMeterAndPremise",
+                {"accountNumber": "A1", "premiseNumber": "P1"},
+            )
+        ],
+        id="meters",
+    ),
+    pytest.param(
+        lambda api: api.async_get_current_bill("A1"),
+        [{**_OK, "data": {}}],
+        [_post("Services/api/1/bill/Current", {"accountNumbers": ["A1"]})],
+        id="current_bill",
+    ),
+    pytest.param(
+        lambda api: api.async_get_bill_pdf("A1", "INV1"),
+        [{**_OK, "data": {"billPdf": "https://ebill.example/bill.pdf"}}, "%PDF"],
+        [
+            _post(
+                "Services/api/1/bill/GetBillPdf",
+                {"accountNumber": "A1", "invoiceId": "INV1", "documentType": "BILL"},
+            ),
+            # The signed link is on a third-party host: no portal headers.
+            {
+                "method": "GET",
+                "url": "https://ebill.example/bill.pdf",
+                "data": None,
+                "params": None,
+                "headers": {},
+            },
+        ],
+        id="bill_pdf",
+    ),
+    pytest.param(
+        lambda api: api.async_get_usage(
+            SERVICE_ELECTRIC, "A1", "P1", "E1", "09/01/2026", "10/15/2026", "HH"
+        ),
+        [{"StatusCode": 200, "Result": {}}],
+        [
+            _get(
+                "UsageAPI/api/V1/Electric",
+                {
+                    "AccountNumber": "P1-A1",
+                    "MeterNumber": "E1",
+                    "From": "09/01/2026",
+                    "To": "10/15/2026",
+                    "Uom": "kWh",
+                    "Periodicity": "HH",
+                },
+                pt="1",
+            )
+        ],
+        id="usage",
+    ),
+]
+
+
+@pytest.mark.parametrize(("call", "responses", "expected"), WIRE_CASES)
+async def test_requests_match_the_portal_exactly(call, responses, expected) -> None:
+    api, session = _api(*(_FakeResponse(200, payload) for payload in responses))
+    api._access_token = "token"  # noqa: SLF001
+    api._refresh_token = "refresh"  # noqa: SLF001
+    api._user_uuid = "u-1"  # noqa: SLF001
+
+    await call(api)
+
+    assert session.calls == expected
+
+
+async def test_a_401_refreshes_and_resends_the_same_request_once() -> None:
+    api, session = _api(
+        _FakeResponse(401, {}),
+        _FakeResponse(200, {**_OK, "data": {"accessToken": "new"}}),
+        _FakeResponse(401, {}),
+    )
+    api._access_token = "token"  # noqa: SLF001
+    api._refresh_token = "refresh"  # noqa: SLF001
+
+    with pytest.raises(AlliantEnergyError, match="HTTP 401"):
+        await api.async_get_meters("A1", "P1")
+
+    first, _refresh, retried = session.calls
+    assert retried == {
+        **first,
+        "headers": {**first["headers"], "Authorization": "Bearer new"},
+    }
+
+
+@pytest.mark.parametrize("status", [400, 404])
+async def test_any_4xx_is_an_api_error(status) -> None:
+    api, _ = _api(_FakeResponse(status, {}))
+    api._access_token = "token"  # noqa: SLF001
+
+    with pytest.raises(AlliantEnergyError, match=f"POST {_ROOT}Services/api/1/bill/Current"):
+        await api.async_get_current_bill("A1")
+
+
+async def test_bill_pdf_link_that_fails_with_400_is_an_api_error() -> None:
+    link = _FakeResponse(200, {"data": {"billPdf": "https://ebill.example/bill.pdf"}})
+    api, _ = _api(link, _FakeResponse(400, "bad"))
+    api._access_token = "token"  # noqa: SLF001
+
+    with pytest.raises(AlliantEnergyError, match="HTTP 400"):
+        await api.async_get_bill_pdf("A1", "INV1")
+
+
+async def test_bill_pdf_returns_the_downloaded_bytes() -> None:
+    link = _FakeResponse(200, {"data": {"billPdf": "https://ebill.example/bill.pdf"}})
+    pdf = _FakeResponse(200, {})
+    pdf.content = b"%PDF-1.7"
+    api, _ = _api(link, pdf)
+    api._access_token = "token"  # noqa: SLF001
+
+    assert await api.async_get_bill_pdf("A1", "INV1") == b"%PDF-1.7"
+
+
+async def test_connection_error_names_the_request() -> None:
+    api, _session, _time = _paced_api(RequestException("reset"))
+
+    with pytest.raises(AlliantEnergyError, match=f"POST {_ROOT}Services/api/1/bill/Current"):
+        await api.async_get_current_bill("A1")
+
+
+async def test_an_empty_response_body_is_no_data() -> None:
+    response = _FakeResponse(200, {})
+    response.text = ""
+    api, _ = _api(response)
+    api._access_token = "token"  # noqa: SLF001
+    api._user_uuid = "u-1"  # noqa: SLF001
+
+    assert await api.async_send_tfa(1) == {}
+
+
+@pytest.mark.parametrize(
+    ("status", "message", "error"),
+    [
+        ({"code": 403, "message": "Locked"}, "Authentication failed (403): Locked", True),
+        ({"code": 404, "message": "Missing"}, "API error (404): Missing", False),
+        ({"code": 500}, "API error (500): request failed", False),
+    ],
+)
+async def test_envelope_errors(status, message, error) -> None:
+    api, _ = _api(_FakeResponse(200, {"status": status}))
+    api._access_token = "token"  # noqa: SLF001
+
+    with pytest.raises(AlliantEnergyError) as err:
+        await api.async_get_current_bill("A1")
+
+    assert str(err.value) == message
+    assert isinstance(err.value, AlliantEnergyAuthError) is error
+
+
+async def test_usage_reads_every_field_and_the_lowercase_result_key() -> None:
+    record = {
+        "consumption": 3.5,
+        "amount": 41.0,
+        "readDate": "2026-10-07T01:00:00",
+        "readingFrom": "2026-09-01T00:00:00",
+        "readingTo": "2026-10-01T00:00:00",
+    }
+    api, _ = _api(_FakeResponse(200, {"StatusCode": 200, "result": {"gasUsages": [record]}}))
+    api._access_token = "token"  # noqa: SLF001
+
+    readings = await api.async_get_usage(
+        SERVICE_GAS, "A1", "P1", "G1", "09/01/2026", "10/15/2026", "MO"
+    )
+
+    assert readings == [
+        UsageReading(
+            usage=3.5,
+            cost=41.0,
+            reading_date="2026-10-07T01:00:00",
+            reading_from="2026-09-01T00:00:00",
+            reading_to="2026-10-01T00:00:00",
+            unit="TH",  # no uom in the record: the unit requested
+        )
+    ]
+
+
+async def test_meter_reads_every_field_and_defaults_to_the_requested_premise() -> None:
+    raw = {"meterType": 1}
+    api, _ = _api(_FakeResponse(200, {**_OK, "data": [raw]}))
+    api._access_token = "token"  # noqa: SLF001
+
+    assert await api.async_get_meters("A1", "P1") == [
+        Meter(meter_number="", premise_number="P1", service_type=SERVICE_ELECTRIC, raw=raw)
+    ]
+
+
+async def test_account_keeps_its_raw_record() -> None:
+    raw = {"accountNumber": "A1", "premiseNumber": "P1", "customerAttribute1": "RES"}
+    api, _ = _api(_FakeResponse(200, {**_OK, "data": [raw]}))
+    api._access_token = "token"  # noqa: SLF001
+    api._user_uuid = "u-1"  # noqa: SLF001
+
+    assert await api.async_get_accounts() == [Account("A1", "P1", raw)]
+
+
+async def test_current_bill_reads_every_field() -> None:
+    api, _ = _api(
+        _FakeResponse(
+            200,
+            {
+                "data": {
+                    "totalAmountDue": 1.5,
+                    "currentCharges": 2.5,
+                    "pastDueAmount": 3.5,
+                    "previousBalance": 4.5,
+                    "netDueDate": "11-03-2026",
+                    "invoiceDate": "10-13-2026",
+                    "invoiceId": "INV1",
+                }
+            },
+        )
+    )
+    api._access_token = "token"  # noqa: SLF001
+
+    assert await api.async_get_current_bill("A1") == BillSummary(
+        amount_due=1.5,
+        current_charges=2.5,
+        past_due_amount=3.5,
+        previous_balance=4.5,
+        due_date=date(2026, 11, 3),
+        invoice_date=date(2026, 10, 13),
+        invoice_id="INV1",
+    )
+
+
+async def test_bill_dates_that_are_not_strings_are_unknown() -> None:
+    api, _ = _api(_FakeResponse(200, {"data": {"netDueDate": 20261103, "invoiceDate": None}}))
+    api._access_token = "token"  # noqa: SLF001
+
+    summary = await api.async_get_current_bill("A1")
+
+    assert (summary.due_date, summary.invoice_date) == (None, None)
+
+
+async def test_new_client_state_before_login() -> None:
+    api, _ = _api()
+
+    assert api.user_uuid is None
+    assert api.tfa_required is False
+    assert api.tfa_details == {}
+
+
+async def test_refresh_keeps_what_the_response_leaves_out() -> None:
+    """A refresh response without a refresh token, user, or persona keeps the old ones."""
+    api, session = _api(
+        _FakeResponse(
+            200,
+            {
+                **_OK,
+                "data": {
+                    "accessToken": "a1",
+                    "refreshToken": "r1",
+                    "user": {"uuid": "u-1", "defaultPersona": 2},
+                },
+            },
+        ),
+        _FakeResponse(200, {**_OK, "data": {"accessToken": "a2"}}),
+        _FakeResponse(200, {**_OK, "data": {"accessToken": "a3"}}),
+        _FakeResponse(200, _OK),
+    )
+    await api.async_login("user", "pass")
+
+    await api.async_refresh_token()
+    await api.async_refresh_token()
+    await api.async_send_tfa(1)
+
+    assert json.loads(session.calls[2]["data"]) == {"refreshToken": "r1"}
+    assert api.user_uuid == "u-1"
+    assert session.calls[3]["headers"]["pt"] == "2"
+
+
+async def test_tfa_without_delivery_details_is_not_required() -> None:
+    api, session = _api(
+        _FakeResponse(200, {**_OK, "data": {"accessToken": "t", "user": {"tfa": True}}}),
+        _FakeResponse(200, _OK),
+    )
+    api._user_uuid = "u-1"  # noqa: SLF001
+
+    await api.async_login("user", "pass")
+    await api.async_send_tfa(1)
+
+    assert api.tfa_required is False
+    assert session.calls[1]["headers"]["pt"] == "1"  # the default persona
