@@ -13,6 +13,7 @@ from custom_components.alliant_energy.api import (
     SERVICE_ELECTRIC,
     SERVICE_GAS,
     Account,
+    AlliantEnergyAuthError,
     AlliantEnergyError,
     BillSummary,
     Meter,
@@ -515,4 +516,26 @@ async def test_overlapping_updates_log_in_once(hass: HomeAssistant, api) -> None
         client.async_fetch_data(), client.async_update_statistics(Bill(BillSummary()))
     )
 
+    api.async_login.assert_awaited_once()
+
+
+async def test_rejected_login_is_not_retried_by_an_overlapping_update(
+    hass: HomeAssistant, api
+) -> None:
+    """Repeated failed logins lock the IP address (ADR 0007)."""
+
+    async def _login(username, password) -> None:
+        await asyncio.sleep(0)
+        raise AlliantEnergyAuthError("bad password")
+
+    api.async_login.side_effect = _login
+    client = LocalUtilityClient(hass, _entry(premise_id="P1"))
+
+    results = await asyncio.gather(
+        client.async_fetch_data(),
+        client.async_update_statistics(Bill(BillSummary())),
+        return_exceptions=True,
+    )
+
+    assert all(isinstance(result, AlliantEnergyAuthError) for result in results)
     api.async_login.assert_awaited_once()

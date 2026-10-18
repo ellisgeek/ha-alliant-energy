@@ -121,7 +121,9 @@ async def test_refresh_during_a_running_import_starts_no_second_one(
     assert client.async_update_statistics.await_count == 1
 
     release.set()
-    await hass.async_block_till_done()
+    running = config_entry.runtime_data.statistics_import
+    assert running is not None
+    await running
     await config_entry.runtime_data.async_refresh()
     await hass.async_block_till_done()
     assert client.async_update_statistics.await_count == 2
@@ -156,3 +158,47 @@ async def test_removing_the_entry_deletes_the_saved_bill(
     await hass.async_block_till_done()
 
     assert key not in hass_storage
+
+
+async def test_unload_stops_a_running_import_before_closing_the_client(
+    hass: HomeAssistant, config_entry
+) -> None:
+    """Otherwise the import fails on a closed session and the backfill restarts."""
+    client = _client()
+    order: list[str] = []
+    started = asyncio.Event()
+
+    async def _import(_bill) -> None:
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            order.append("import cancelled")
+            raise
+
+    async def _close() -> None:
+        order.append("client closed")
+
+    client.async_update_statistics.side_effect = _import
+    client.async_close.side_effect = _close
+    await _setup(hass, config_entry, client)
+    await started.wait()
+
+    assert await hass.config_entries.async_unload(config_entry.entry_id)
+
+    assert order == ["import cancelled", "client closed"]
+
+
+async def test_auth_failure_in_a_refresh_starts_no_import(
+    hass: HomeAssistant, config_entry
+) -> None:
+    client = _client()
+    await _setup(hass, config_entry, client)
+    client.async_fetch_data.side_effect = AlliantEnergyAuthError("expired")
+
+    await config_entry.runtime_data.async_refresh()
+    await hass.async_block_till_done()
+
+    client.async_update_statistics.assert_awaited_once()  # only the first refresh's
+    flows = hass.config_entries.flow.async_progress_by_handler("alliant_energy")
+    assert [flow["context"]["source"] for flow in flows] == ["reauth"]

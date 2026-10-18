@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 
 from homeassistant.const import Platform
@@ -30,8 +31,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: AlliantEnergyConfigEntry
     entry.runtime_data = coordinator
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
-    importing: asyncio.Task[None] | None = None
-
     async def _import_statistics(bill: Bill) -> None:
         """Import long-term statistics; runs off the setup and refresh path."""
         try:
@@ -48,13 +47,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: AlliantEnergyConfigEntry
         A long backfill can still be running at the next refresh; that refresh
         then imports nothing, and a later one continues from the last hour.
         """
-        nonlocal importing
         if not coordinator.last_update_success or coordinator.data is None:
             return
-        if importing is not None and not importing.done():
+        running = coordinator.statistics_import
+        if running is not None and not running.done():
             _LOGGER.debug("Statistics import still running; skipping this refresh")
             return
-        importing = entry.async_create_background_task(
+        coordinator.statistics_import = entry.async_create_background_task(
             hass, _import_statistics(coordinator.data.bill), "alliant_energy_statistics"
         )
 
@@ -73,7 +72,14 @@ async def async_unload_entry(hass: HomeAssistant, entry: AlliantEnergyConfigEntr
     """Unload a config entry."""
     unloaded = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if unloaded:
-        await entry.runtime_data.client.async_close()
+        coordinator = entry.runtime_data
+        # Stop a running import before closing its session; otherwise it fails
+        # mid-request and a backfill starts over after a reload.
+        if (running := coordinator.statistics_import) is not None and not running.done():
+            running.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await running
+        await coordinator.client.async_close()
     return unloaded
 
 

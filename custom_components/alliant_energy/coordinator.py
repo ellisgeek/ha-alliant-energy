@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import TYPE_CHECKING
 
@@ -40,6 +41,8 @@ class EnergyCoordinator(DataUpdateCoordinator[EnergyData]):
             update_interval=update_interval(config_entry),
         )
         self.client = client
+        # The statistics import started after the latest refresh (see __init__).
+        self.statistics_import: asyncio.Task[None] | None = None
 
     async def _async_update_data(self) -> EnergyData:
         """Fetch the latest readings from the utility client."""
