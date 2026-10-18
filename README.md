@@ -45,24 +45,92 @@ your Home Assistant configuration directory, then restart Home Assistant.
 
 ## Configuration
 
+### 1. Add the integration
+
 1. Go to **Settings > Devices & services > Add integration** and choose
    **Alliant Energy**.
 2. Enter the username (or email) and password you use for the Alliant portal.
 3. If the login has more than one account, pick the account to add.
 
-To add the data to the Energy dashboard, go to **Settings > Dashboards >
-Energy**. Add the `Alliant Energy electric ...` statistic under **Electricity
-grid** and the `Alliant Energy gas ...` statistic under **Gas consumption**.
-For cost, choose **Use an entity tracking the total costs** and pick the
-matching `... cost` statistic.
+The integration then imports about a year of hourly history in the
+background. This takes a few minutes. The statistics do not appear in the
+Energy dashboard pickers until the first import is done.
 
-The first import runs in the background and takes a few minutes. Hourly data
-is about two days behind, so the newest days fill in on later updates.
+### 2. Add your meters to the Energy dashboard
+
+The integration creates two statistics per meter. The meter number is in the
+name:
+
+| Statistic | What it holds |
+| --- | --- |
+| `Alliant Energy electric <meter>` | Hourly electricity use, in kWh |
+| `Alliant Energy electric <meter> cost` | Hourly electricity cost |
+| `Alliant Energy gas <meter>` | Hourly gas use, in kWh (see below) |
+| `Alliant Energy gas <meter> cost` | Hourly gas cost |
+
+These are imported statistics, not sensors. In the Energy dashboard dialogs
+they show the label "Alliant Energy" under the name.
+
+**Electricity**
+
+1. Go to **Settings > Dashboards > Energy**.
+2. Under **Electricity grid**, add a grid connection.
+3. In the energy imported field, pick `Alliant Energy electric <meter>`.
+4. Leave **Energy exported to grid** empty. Alliant reports only imported
+   energy.
+5. Optional: set **Display name** to something readable, for example
+   "Alliant". Otherwise the dialog can show the raw statistic id.
+6. Under **Cost tracking**, choose **Use an entity tracking the total costs**,
+   then pick `Alliant Energy electric <meter> cost`.
+7. Select **Save**.
+
+**Gas**
+
+1. Under **Gas consumption**, add a gas source.
+2. In **Gas consumption**, pick `Alliant Energy gas <meter>`.
+3. Leave **Gas flow rate** empty.
+4. Under the cost options, choose **Use an entity tracking the total costs**,
+   then pick `Alliant Energy gas <meter> cost`.
+5. Select **Save**.
+
+> **Why "Use an entity with current price" and "Use a static price" are
+> greyed out:** Home Assistant allows these two options only for live sensors.
+> It calculates their cost from state changes as they happen. Imported
+> statistics have no live state, so Home Assistant turns these options off.
+> The integration calculates the cost itself and imports it as the `... cost`
+> statistic, which is why you pick **Use an entity tracking the total costs**.
+> To use a fixed price instead, set it in the integration's options (see
+> below).
+
+Gas is stored as energy (kWh), not volume, because the Energy dashboard does
+not accept therms. Home Assistant does not let you mix gas volume sources and
+gas energy sources. If you already track gas by volume (for example with a
+CCF or ft³ meter sensor), use one or the other.
+
+Hourly data is about two days behind, so the newest days fill in on later
+updates. The dashboard shows nothing for the last day or two.
 
 ### Options
 
-**Configure** on the integration lets you set a fixed electricity rate ($/kWh)
-or gas rate ($/therm). Leave a field blank to use the rate from your bill.
+To use a fixed price, open **Settings > Devices & services > Alliant Energy**
+and select **Configure**. Enter an electricity rate ($/kWh), a gas rate
+($/therm), or both. Leave a field blank to use the rate from your bill. When
+you save, the integration reloads and imports new hours at that rate. Hours
+that were already imported keep their old cost.
+
+### Troubleshooting
+
+- **No `Alliant Energy ...` statistics in the picker:** the first import may
+  still be running. Wait a few minutes, then reopen the dialog. To check,
+  search for `alliant` in **Developer tools > Statistics**.
+- **No `... cost` statistic:** the integration could not find a rate. Look in
+  **Settings > System > Logs** for `Could not read rates from the bill PDF` or
+  `Alliant Energy statistics import failed`. As a workaround, set a fixed rate
+  in the options.
+- **Asked to sign in again:** your Alliant password changed, or the session
+  could not be renewed. Re-enter the password when Home Assistant asks. The
+  integration does not retry an old password, so repeated failed logins don't
+  lock your account.
 
 ## How cost is calculated
 
