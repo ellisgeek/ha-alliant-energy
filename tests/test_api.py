@@ -21,6 +21,7 @@ from custom_components.alliant_energy.api import (
     AlliantEnergyAuthError,
     AlliantEnergyError,
     BillSummary,
+    PastBill,
     _sign,
 )
 
@@ -395,3 +396,32 @@ async def test_empty_current_bill_is_an_empty_summary() -> None:
     api._access_token = "token"
 
     assert await api.async_get_current_bill("acct") == BillSummary()
+
+
+async def test_bill_history_lists_past_bills_with_their_invoices() -> None:
+    api, session = _api(
+        _FakeResponse(
+            200,
+            {
+                "data": [
+                    {"invoiceId": "INV2", "billDate": "10-13-2026", "amountDue": 97.1},
+                    {"invoiceId": "INV1", "billDate": "09-11-2026", "amountDue": 12.0},
+                    {"invoiceId": "", "billDate": "08-11-2026"},  # no PDF to read
+                ]
+            },
+        )
+    )
+    api._access_token = "token"
+
+    bills = await api.async_get_bill_history("acct", date(2024, 1, 1), date(2026, 10, 18))
+
+    assert bills == [
+        PastBill(invoice_id="INV2", bill_date=date(2026, 10, 13)),
+        PastBill(invoice_id="INV1", bill_date=date(2026, 9, 11)),
+    ]
+    assert json.loads(session.calls[0]["data"]) == {
+        "accountNumbers": ["acct"],
+        "startDate": "01/01/2024",
+        "endDate": "10/18/2026",
+    }
+    assert session.calls[0]["url"].endswith("bill/History")

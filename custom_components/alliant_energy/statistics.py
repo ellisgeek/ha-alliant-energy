@@ -28,9 +28,9 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, timedelta, tzinfo
-from typing import Any
+from typing import Any, Protocol
 
 import homeassistant.util.dt as dt_util
 from homeassistant.components.recorder.models import (
@@ -57,8 +57,24 @@ from .const import (
     STATISTICS_LAG_DAYS,
     USAGE_UNIT,
 )
-from .rates import BillingCycle, CostRate, KnownRates, cost_identity, known_cost_rate
+from .rates import (
+    BillingCycle,
+    CostRate,
+    KnownRates,
+    MarginalRate,
+    cost_identity,
+    known_cost_rate,
+)
 from .usage import MeterUsage
+
+
+class BillHistory(Protocol):
+    """Marginal rates from an account's past bills (see bill.PastBills)."""
+
+    async def marginal_rates(self, service: str, since: date) -> list[MarginalRate]:
+        """The service's marginal rate from each bill issued since a date."""
+        ...
+
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -105,6 +121,7 @@ async def async_update_statistics(
     meters: list[Meter],
     rates: Mapping[str, KnownRates],
     max_history_days: int = DEFAULT_MAX_HISTORY_DAYS,
+    past_bills: BillHistory | None = None,
 ) -> None:
     """Import hourly usage (and cost, when a cost rate is known) for every meter.
 
@@ -113,7 +130,9 @@ async def async_update_statistics(
     tz = await dt_util.async_get_time_zone(hass.config.time_zone) or dt_util.UTC
     for meter in meters:
         known = rates.get(meter.service_type) or KnownRates()
-        await _async_update_meter(hass, usage, account_number, meter, tz, known, max_history_days)
+        await _async_update_meter(
+            hass, usage, account_number, meter, tz, known, max_history_days, past_bills
+        )
 
 
 async def _async_update_meter(
@@ -124,6 +143,7 @@ async def _async_update_meter(
     tz: tzinfo,
     known: KnownRates,
     max_days: int,
+    past: BillHistory | None,
 ) -> None:
     cons_id = statistic_id(account_number, meter)
     cost_id = statistic_id(account_number, meter, "_cost")
@@ -134,7 +154,9 @@ async def _async_update_meter(
     # (or was imported with a different history limit), or its usage
     # statistic is missing.
     if imported.full_history.get(cons_id) != max_days or cons_last is None:
-        await _async_import_full_history(hass, usage, account_number, meter, tz, known, max_days)
+        await _async_import_full_history(
+            hass, usage, account_number, meter, tz, known, max_days, past
+        )
         return
 
     cost_last = await _async_last(hass, cost_id)
@@ -142,6 +164,8 @@ async def _async_update_meter(
     reprice = cost_last is None or priced_with != cost_identity(known.static)
     # Cost is appended from the older of the two last imported hours.
     since = cons_last[0] if reprice or cost_last is None else min(cons_last[0], cost_last[0])
+    # Past bills only for older hours: a full import or a reprice, never a normal
+    # update (ADR 0014).
     rate = await _async_cost_rate(usage, meter, tz, known, _local_date(since, tz))
 
     if rate is None:
@@ -173,7 +197,7 @@ async def _async_update_meter(
         return
     oldest = hours[0][0].astimezone(tz).date()
     if oldest < _local_date(since, tz):
-        rate = await _async_cost_rate(usage, meter, tz, known, oldest) or rate
+        rate = await _async_cost_rate(usage, meter, tz, known, oldest, past) or rate
     _LOGGER.info("Repricing the cost history of %s", cost_id)
     get_instance(hass).async_clear_statistics([cost_id])
     _import_cost(hass, meter, cost_id, hours, rate, None)
@@ -189,6 +213,7 @@ async def _async_import_full_history(
     tz: tzinfo,
     known: KnownRates,
     max_days: int,
+    past: BillHistory | None,
 ) -> None:
     """Replace a meter's statistics with every hour the API has, up to the limit."""
     cons_id = statistic_id(account_number, meter)
@@ -200,7 +225,7 @@ async def _async_import_full_history(
     if not native:
         return
     oldest = native[0][0].astimezone(tz).date()
-    rate = await _async_cost_rate(usage, meter, tz, known, oldest)
+    rate = await _async_cost_rate(usage, meter, tz, known, oldest, past)
 
     # The recorder runs these in order: clear first, then the new imports.
     get_instance(hass).async_clear_statistics([cons_id, cost_id])
@@ -312,22 +337,31 @@ async def _async_cost_rate(
     tz: tzinfo,
     known: KnownRates,
     since: date,
+    past: BillHistory | None = None,
 ) -> CostRate | None:
     """Return the cost rate for hours from ``since`` on, or None when none is known.
 
-    Billing cycles are read only when an hour from ``since`` on needs an
-    effective rate: never with a static rate, and with a marginal rate only for
-    hours before its billing cycle.
+    With a static rate, nothing is read. Otherwise past bills are read only when
+    an hour from ``since`` on is older than every bill known, and billing cycles
+    only when an hour is older than every bill read (ADR 0014).
     """
+    if known.static is not None:
+        return known_cost_rate(known, [], tz)
+    if past is not None and _before_bills(known, since):
+        read = await past.marginal_rates(meter.service_type, since)
+        known = replace(known, marginals=(*known.marginals, *read))
     cycles: list[BillingCycle] = []
-    needs_cycles = known.static is None and (
-        known.marginal is None or known.marginal_from is None or since < known.marginal_from
-    )
-    if needs_cycles:
+    if _before_bills(known, since):
         today = dt_util.now(tz).date()
         lookback = today - timedelta(days=_RATE_LOOKBACK_DAYS)
         cycles = await usage.billing_cycles(meter, min(since, lookback), today)
     return known_cost_rate(known, cycles, tz)
+
+
+def _before_bills(known: KnownRates, since: date) -> bool:
+    """Whether a day is older than every bill known (or no bill is known)."""
+    starts = [marginal.start for marginal in known.marginals if marginal.start is not None]
+    return not starts or since < min(starts)
 
 
 def _local_date(timestamp: float, tz: tzinfo) -> date:

@@ -19,7 +19,7 @@ from custom_components.alliant_energy.api import (
     Meter,
     UsageReading,
 )
-from custom_components.alliant_energy.bill import Bill
+from custom_components.alliant_energy.bill import Bill, PastBills
 from custom_components.alliant_energy.billparser import (
     PARSER_VERSION,
     ItemizedBill,
@@ -30,7 +30,7 @@ from custom_components.alliant_energy.const import DOMAIN
 from custom_components.alliant_energy.coordinator import EnergyCoordinator
 from custom_components.alliant_energy.models import ServiceData
 from custom_components.alliant_energy.provider import LocalUtilityClient
-from custom_components.alliant_energy.rates import KnownRates
+from custom_components.alliant_energy.rates import KnownRates, MarginalRate
 from custom_components.alliant_energy.sensor import SENSOR_DESCRIPTIONS, UtilitySensor
 from custom_components.alliant_energy.usage import AlliantUsage
 
@@ -315,11 +315,14 @@ async def test_statistics_use_the_rates_of_the_bill_they_are_given(
 
     api.async_get_current_bill.assert_not_awaited()
 
-    rates = api.update_statistics.await_args.kwargs["rates"]
-    assert rates[SERVICE_ELECTRIC] == KnownRates(
-        static=None, marginal=0.16223, marginal_from=date(2026, 9, 11)
+    kwargs = api.update_statistics.await_args.kwargs
+    assert kwargs["rates"][SERVICE_ELECTRIC] == KnownRates(
+        static=None, marginals=(MarginalRate(0.16223, date(2026, 9, 11)),)
     )
-    assert rates[SERVICE_GAS] == KnownRates(static=1.1, marginal=0.508507, marginal_from=None)
+    assert kwargs["rates"][SERVICE_GAS] == KnownRates(
+        static=1.1, marginals=(MarginalRate(0.508507, None),)
+    )
+    assert isinstance(kwargs["past_bills"], PastBills)  # for older billing cycles
 
 
 async def test_bill_details_and_projection(hass: HomeAssistant, api, hass_storage) -> None:

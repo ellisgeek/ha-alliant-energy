@@ -25,7 +25,7 @@ from .api import (
     AlliantEnergyError,
     Meter,
 )
-from .bill import Bill, LatestBill
+from .bill import Bill, LatestBill, PastBills
 from .billparser import ItemizedBill, ServiceBill
 from .const import (
     CONF_ACCOUNT_ID,
@@ -38,7 +38,13 @@ from .const import (
 )
 from .models import EnergyData, ServiceData
 from .options import max_history_days
-from .rates import RATE_SOURCE_BILLING_CYCLE, BillingCycle, KnownRates, known_cost_rate
+from .rates import (
+    RATE_SOURCE_BILLING_CYCLE,
+    BillingCycle,
+    KnownRates,
+    MarginalRate,
+    known_cost_rate,
+)
 from .usage import AlliantUsage
 
 _LOGGER = logging.getLogger(__name__)
@@ -69,6 +75,9 @@ class LocalUtilityClient:
         self._context_lock = asyncio.Lock()
         self._login_rejected: AlliantEnergyAuthError | None = None
         self._bills = LatestBill(hass, self._api, self._account_id, entry.entry_id)
+        self._past_bills = PastBills(
+            hass, self._api, self._account_id, entry.entry_id, latest=self._bills
+        )
 
     @property
     def _account_id(self) -> str:
@@ -103,6 +112,7 @@ class LocalUtilityClient:
                 meters,
                 rates=self._known_rates(bill),
                 max_history_days=max_history_days(self.entry),
+                past_bills=self._past_bills,
             )
         except AlliantEnergyAuthError:
             self._logged_in = False
@@ -116,10 +126,14 @@ class LocalUtilityClient:
             (SERVICE_GAS, CONF_GAS_RATE),
         ):
             section = bill.section(service)
+            marginal = section.marginal_rate if section else None
             known[service] = KnownRates(
                 static=_option_float(self.entry.options.get(option_key)),
-                marginal=section.marginal_rate if section else None,
-                marginal_from=section.period_start if section else None,
+                marginals=(
+                    (MarginalRate(marginal, section.period_start),)
+                    if section and marginal is not None
+                    else ()
+                ),
             )
         return known
 

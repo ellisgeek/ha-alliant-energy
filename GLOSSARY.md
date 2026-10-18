@@ -102,9 +102,10 @@ The set of marginal rates and customer charges read from one bill.
 
 **Cost rate**:
 The rate that prices one hour of a cost statistic, chosen from the static,
-marginal, and effective rate. A static rate wins for every hour; otherwise a
-bill's marginal rate covers its billing cycle and later hours, and older hours
-use their own billing cycle's effective rate.
+marginal, and effective rate. A static rate wins for every hour; otherwise each
+billing cycle uses its own bill's marginal rate, the latest bill's covers every
+later hour, and hours older than every bill read use their billing cycle's
+effective rate.
 _Avoid_: Price, tariff
 
 ## Home Assistant presentation
