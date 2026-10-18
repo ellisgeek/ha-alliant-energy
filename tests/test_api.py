@@ -99,17 +99,38 @@ async def test_login_stores_tokens_and_signs_request() -> None:
 
 async def test_alliant_requests_go_to_its_backend_with_its_headers() -> None:
     """The values confirmed live for Alliant (docs/backend-api.md)."""
-    api, session = _api(_FakeResponse(200, {"StatusCode": 200, "Result": {}}))
+    api, session = _api(
+        _FakeResponse(
+            200,
+            {
+                "status": {"code": 200},
+                "data": [
+                    {"meterNumber": "E1", "premiseNumber": "P1", "meterType": 1},
+                    {"meterNumber": "G1", "premiseNumber": "P1", "meterType": 2},
+                ],
+            },
+        ),
+        _FakeResponse(200, {"StatusCode": 200, "Result": {}}),
+        _FakeResponse(200, {"StatusCode": 200, "Result": {}}),
+    )
     api._access_token = "token"  # noqa: SLF001
 
+    meters = await api.async_get_meters("acct", "P1")
     await api.async_get_usage(SERVICE_GAS, "acct", "P1", "G1", "09/01/2026", "10/15/2026")
+    await api.async_get_usage(
+        SERVICE_GAS, "acct", "P1", "G1", "09/01/2026", "10/15/2026", periodicity="MO"
+    )
 
-    call = session.calls[0]
-    assert call["url"] == "https://alliant-svc.smartcmobile.com/UsageAPI/api/V1/Gas"
-    assert call["headers"]["uid"] == "1"
-    assert call["headers"]["Origin"] == "https://myaccount.alliantenergy.com"
-    assert call["headers"]["Referer"] == "https://myaccount.alliantenergy.com/Portal/"
-    assert call["params"]["Uom"] == "Therm"
+    assert [m.service_type for m in meters] == [SERVICE_ELECTRIC, SERVICE_GAS]
+    _meters, hourly, cycles = session.calls
+    assert hourly["url"] == "https://alliant-svc.smartcmobile.com/UsageAPI/api/V1/Gas"
+    assert hourly["headers"]["uid"] == "1"
+    assert hourly["headers"]["pt"] == "1"
+    assert hourly["headers"]["Origin"] == "https://myaccount.alliantenergy.com"
+    assert hourly["headers"]["Referer"] == "https://myaccount.alliantenergy.com/Portal/"
+    # The documented trap: gas needs "Therm" hourly but "TH" per billing cycle.
+    assert hourly["params"]["Uom"] == "Therm"
+    assert cycles["params"]["Uom"] == "TH"
 
 
 async def test_requests_use_the_utilitys_deployment() -> None:
@@ -493,3 +514,15 @@ async def test_bill_history_lists_past_bills_with_their_invoices() -> None:
     assert session.calls[0]["url"] == (
         "https://alliant-svc.smartcmobile.com/Services/api/1/bill/History"
     )
+
+
+async def test_two_factor_requests_use_the_utilitys_persona_until_login_says_otherwise() -> None:
+    other = replace(ALLIANT_ENERGY, persona_type="3")
+    session = _FakeSession([_FakeResponse(200, {"status": {"code": 200}, "data": {}})])
+    api = AlliantEnergyApi(other, session=session)
+    api._access_token = "token"  # noqa: SLF001
+    api._user_uuid = "user"  # noqa: SLF001
+
+    await api.async_send_tfa(1)
+
+    assert session.calls[0]["headers"]["pt"] == "3"

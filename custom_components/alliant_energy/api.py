@@ -199,7 +199,7 @@ class AlliantEnergyApi:
         self._user_uuid: str | None = None
         self._tfa_required = False
         self._tfa_details: dict[str, Any] = {}
-        self._tfa_persona = "1"
+        self._tfa_persona = utility.persona_type
 
     @property
     def user_uuid(self) -> str | None:

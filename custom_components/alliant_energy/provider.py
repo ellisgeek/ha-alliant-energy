@@ -28,6 +28,7 @@ from .api import (
 from .bill import Bill, LatestBill, PastBills
 from .billparser import ItemizedBill, ServiceBill
 from .const import (
+    BILL_PARSER,
     CONF_ACCOUNT_ID,
     CONF_ELECTRICITY_RATE,
     CONF_GAS_RATE,
@@ -35,6 +36,7 @@ from .const import (
     CONF_PREMISE_ID,
     CONF_USERNAME,
     CURRENCY_USD,
+    UTILITY,
 )
 from .models import EnergyData, ServiceData
 from .options import max_history_days
@@ -46,7 +48,6 @@ from .rates import (
     known_cost_rate,
 )
 from .usage import AlliantUsage
-from .utility import ALLIANT_ENERGY
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -68,22 +69,20 @@ class LocalUtilityClient:
         self.hass = hass
         self.entry = entry
         # The client owns a curl_cffi session; aiohttp is blocked by Cloudflare.
-        self._api = AlliantEnergyApi(ALLIANT_ENERGY)
+        self._api = AlliantEnergyApi(UTILITY)
         self._meters: list[Meter] | None = None
         self._premise: str | None = entry.data.get(CONF_PREMISE_ID)
         self._logged_in = False
         self._usage: AlliantUsage | None = None
         self._context_lock = asyncio.Lock()
         self._login_rejected: AlliantEnergyAuthError | None = None
-        self._bills = LatestBill(
-            hass, self._api, self._account_id, entry.entry_id, ALLIANT_ENERGY.bill_parser
-        )
+        self._bills = LatestBill(hass, self._api, self._account_id, entry.entry_id, BILL_PARSER)
         self._past_bills = PastBills(
             hass,
             self._api,
             self._account_id,
             entry.entry_id,
-            ALLIANT_ENERGY.bill_parser,
+            BILL_PARSER,
             latest=self._bills,
         )
 

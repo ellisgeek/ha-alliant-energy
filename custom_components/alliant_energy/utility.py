@@ -7,17 +7,20 @@ deployment, though, with its own host, utility id, and codes. A
 
 Only Alliant Energy is defined. Its values were confirmed live; another
 utility's values must be confirmed the same way before it is added, because a
-wrong unit code returns an empty result, not an error. No Home Assistant
-imports.
+wrong unit code returns an empty result, not an error.
+
+Like :mod:`.api`, this module is part of the backend client: it imports
+nothing from Home Assistant or the rest of the integration, so the two can
+move to their own project together. Which bill parser reads a utility's PDFs
+is the integration's choice (see :mod:`.const`).
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 from .api import SERVICE_ELECTRIC, SERVICE_GAS
-from .billparser import ItemizedBill, parse_bill
 
 
 @dataclass(frozen=True)
@@ -34,9 +37,6 @@ class Utility:
     # requests can need different spellings.
     interval_uom: Mapping[str, str]
     monthly_uom: Mapping[str, str]
-    # Reads the itemized bill PDF. None when the utility's bill layout has no
-    # parser; the bill then has only its summary.
-    bill_parser: Callable[[bytes], ItemizedBill] | None = None
 
     @property
     def api_root(self) -> str:
@@ -59,5 +59,4 @@ ALLIANT_ENERGY = Utility(
     # Gas is the trap: hourly needs "Therm" but billing-cycle needs "TH".
     interval_uom={SERVICE_ELECTRIC: "kWh", SERVICE_GAS: "Therm"},
     monthly_uom={SERVICE_ELECTRIC: "kWh", SERVICE_GAS: "TH"},
-    bill_parser=parse_bill,
 )
