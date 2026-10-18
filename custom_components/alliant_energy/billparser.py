@@ -34,13 +34,15 @@ from dataclasses import asdict, dataclass, field, fields
 from datetime import date, datetime
 from typing import Any
 
+from .api import SERVICE_ELECTRIC, SERVICE_GAS
+
 _LOGGER = logging.getLogger(__name__)
 
 # Bump when parsing changes what a bill yields, so saved bills are parsed again.
 PARSER_VERSION = 1
 
-SERVICE_ELECTRIC = "electric"
-SERVICE_GAS = "gas"
+# The component each service's adjustment sensor shows.
+_ADJUSTMENT_COMPONENT = {SERVICE_ELECTRIC: "fuel_adjustment", SERVICE_GAS: "supply_market_adj"}
 
 # Per-unit rate on a labelled charge line, e.g. "... 339.000 kWhX$0.17011 ...".
 _KWH_RATE = re.compile(r"kWhX\$(-?\d+(?:\.\d+)?)")
@@ -85,7 +87,7 @@ class ServiceBill:
 
 
 @dataclass(frozen=True)
-class Bill:
+class ItemizedBill:
     """What an itemized bill says."""
 
     electric: ServiceBill | None = None
@@ -96,9 +98,20 @@ class Bill:
     average_temperature: float | None = None  # °F over the billing period
     degree_days: float | None = None
 
+    def section(self, service: str) -> ServiceBill | None:
+        """One service's section (SERVICE_ELECTRIC or SERVICE_GAS), if billed."""
+        return {SERVICE_ELECTRIC: self.electric, SERVICE_GAS: self.gas}.get(service)
 
-def parse_bill(pdf_bytes: bytes) -> Bill:
-    """Parse a bill PDF into a :class:`Bill` (best-effort)."""
+    def adjustment(self, service: str) -> float | None:
+        """The service's adjustment rate: fuel (electric) or supply market (gas)."""
+        section = self.section(service)
+        if section is None:
+            return None
+        return section.components.get(_ADJUSTMENT_COMPONENT[service])
+
+
+def parse_bill(pdf_bytes: bytes) -> ItemizedBill:
+    """Parse a bill PDF into a :class:`ItemizedBill` (best-effort)."""
     import pdfplumber  # imported lazily so the dep only loads when parsing
 
     with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
@@ -106,8 +119,8 @@ def parse_bill(pdf_bytes: bytes) -> Bill:
     return parse_bill_text(text)
 
 
-def parse_bill_text(text: str) -> Bill:
-    """Parse already-extracted bill text into a :class:`Bill`."""
+def parse_bill_text(text: str) -> ItemizedBill:
+    """Parse already-extracted bill text into a :class:`ItemizedBill`."""
     lines = [line.strip() for line in text.splitlines()]
     bill_date = _search_date(_BILL_DATE, text)
     next_read = _NEXT_READ.search(text)
@@ -119,7 +132,7 @@ def parse_bill_text(text: str) -> Bill:
         if current is None or _section_key(parsed) >= _section_key(current):
             best[service] = parsed
 
-    return Bill(
+    return ItemizedBill(
         electric=best.get(SERVICE_ELECTRIC),
         gas=best.get(SERVICE_GAS),
         bill_date=bill_date,
@@ -252,18 +265,18 @@ def _first_float(pattern: re.Pattern[str], lines: list[str]) -> float | None:
     return None
 
 
-def bill_to_dict(bill: Bill) -> dict[str, Any]:
-    """A JSON-safe dict of a :class:`Bill` (dates as ISO strings)."""
+def bill_to_dict(bill: ItemizedBill) -> dict[str, Any]:
+    """A JSON-safe dict of a :class:`ItemizedBill` (dates as ISO strings)."""
     return _jsonable(asdict(bill))
 
 
-def bill_from_dict(data: dict[str, Any]) -> Bill:
-    """Rebuild a :class:`Bill` saved with :func:`bill_to_dict`."""
+def bill_from_dict(data: dict[str, Any]) -> ItemizedBill:
+    """Rebuild a :class:`ItemizedBill` saved with :func:`bill_to_dict`."""
     rest = {k: v for k, v in data.items() if k not in (SERVICE_ELECTRIC, SERVICE_GAS)}
-    return Bill(
+    return ItemizedBill(
         electric=_service_from_dict(data.get(SERVICE_ELECTRIC)),
         gas=_service_from_dict(data.get(SERVICE_GAS)),
-        **_dates(Bill, rest),
+        **_dates(ItemizedBill, rest),
     )
 
 
@@ -279,7 +292,7 @@ def _jsonable(value: Any) -> Any:
     return value
 
 
-def _dates(cls: type[Bill] | type[ServiceBill], data: dict[str, Any]) -> dict[str, Any]:
+def _dates(cls: type[ItemizedBill] | type[ServiceBill], data: dict[str, Any]) -> dict[str, Any]:
     """Turn ISO strings back into dates for the date fields of a dataclass."""
     date_fields = {f.name for f in fields(cls) if "date" in str(f.type)}
     return {

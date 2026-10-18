@@ -9,9 +9,10 @@ from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.event import async_track_time_interval
 
+from .bill import async_forget_bill
 from .coordinator import AlliantEnergyConfigEntry, EnergyCoordinator
 from .options import update_interval
-from .provider import AlliantEnergyAuthError, LocalUtilityClient, bill_store
+from .provider import AlliantEnergyAuthError, LocalUtilityClient
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -67,4 +68,4 @@ async def async_unload_entry(hass: HomeAssistant, entry: AlliantEnergyConfigEntr
 
 async def async_remove_entry(hass: HomeAssistant, entry: AlliantEnergyConfigEntry) -> None:
     """Delete the saved bill when the integration is removed."""
-    await bill_store(hass, entry.entry_id).async_remove()
+    await async_forget_bill(hass, entry.entry_id)

@@ -9,13 +9,11 @@ from __future__ import annotations
 
 import logging
 from dataclasses import replace
-from datetime import date, datetime, timedelta
-from typing import Any
+from datetime import date, timedelta
 
 import homeassistant.util.dt as dt_util
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.storage import Store
 
 from . import statistics as stats
 from .api import (
@@ -24,16 +22,11 @@ from .api import (
     AlliantEnergyApi,
     AlliantEnergyAuthError,
     AlliantEnergyError,
+    BillSummary,
     Meter,
 )
-from .billparser import (
-    PARSER_VERSION,
-    Bill,
-    ServiceBill,
-    bill_from_dict,
-    bill_to_dict,
-    parse_bill,
-)
+from .bill import Bill, LatestBill
+from .billparser import ItemizedBill, ServiceBill
 from .const import (
     CONF_ACCOUNT_ID,
     CONF_ELECTRICITY_RATE,
@@ -42,7 +35,6 @@ from .const import (
     CONF_PREMISE_ID,
     CONF_USERNAME,
     CURRENCY_USD,
-    DOMAIN,
 )
 from .models import RATE_SOURCE_BILLING_CYCLE, EnergyData, ServiceData
 from .options import max_history_days
@@ -74,13 +66,7 @@ class LocalUtilityClient:
         self._premise: str | None = entry.data.get(CONF_PREMISE_ID)
         self._logged_in = False
         self._usage: AlliantUsage | None = None
-        # The latest bill PDF, parsed and cached per invoice. Also saved to a
-        # store so restarts and reloads reuse it: the PDF is downloaded only
-        # when a new invoice appears, about once a month.
-        self._bill: Bill | None = None
-        self._bill_invoice: str | None = None
-        self._bill_loaded = False
-        self._bill_store: Store[dict[str, Any]] = bill_store(hass, entry.entry_id)
+        self._bills = LatestBill(hass, self._api, self._account_id, entry.entry_id)
 
     @property
     def _account_id(self) -> str:
@@ -107,7 +93,15 @@ class LocalUtilityClient:
         """
         try:
             usage, meters = await self._async_ensure_context()
-            bill = await self._async_ensure_bill()
+            try:
+                bill = await self._bills.latest()
+            except AlliantEnergyAuthError:
+                raise
+            except Exception as err:  # noqa: BLE001 - keep pricing with the last bill read
+                # Imported cost keeps its rate for good (ADR 0012), so keep the
+                # marginal rate from the itemized bill already read.
+                _LOGGER.warning("Could not fetch the bill summary: %s", err)
+                bill = Bill(BillSummary(), await self._bills.last_read())
             await stats.async_update_statistics(
                 self.hass,
                 usage,
@@ -120,14 +114,14 @@ class LocalUtilityClient:
             self._logged_in = False
             raise
 
-    def _known_rates(self, bill: Bill | None) -> dict[str, KnownRates]:
-        """Each service's static rate (options) and marginal rate (bill PDF)."""
+    def _known_rates(self, bill: Bill) -> dict[str, KnownRates]:
+        """Each service's static rate (options) and marginal rate (itemized bill)."""
         known: dict[str, KnownRates] = {}
         for service, option_key in (
             (SERVICE_ELECTRIC, CONF_ELECTRICITY_RATE),
             (SERVICE_GAS, CONF_GAS_RATE),
         ):
-            section = _section(bill, service)
+            section = bill.section(service)
             known[service] = KnownRates(
                 static=_option_float(self.entry.options.get(option_key)),
                 marginal=section.marginal_rate if section else None,
@@ -135,17 +129,12 @@ class LocalUtilityClient:
             )
         return known
 
-    async def _async_resolve_services(
-        self, current_bill: dict[str, Any] | None = None
-    ) -> tuple[dict[str, ServiceData], Bill | None]:
-        """Resolve each service's bill details from the latest bill PDF."""
-        bill = await self._async_ensure_bill(current_bill)
+    @staticmethod
+    def _services(bill: Bill) -> dict[str, ServiceData]:
+        """Each service's details from the itemized bill."""
         services: dict[str, ServiceData] = {}
-        for service, adjustment_key in (
-            (SERVICE_ELECTRIC, "fuel_adjustment"),
-            (SERVICE_GAS, "supply_market_adj"),
-        ):
-            section = _section(bill, service)
+        for service in (SERVICE_ELECTRIC, SERVICE_GAS):
+            section = bill.section(service)
             if section is None:
                 services[service] = ServiceData()
                 continue
@@ -153,55 +142,14 @@ class LocalUtilityClient:
                 rate_plan=section.rate_plan,
                 rate_plan_name=section.rate_plan_name,
                 customer_charge_per_day=section.customer_charge_per_day,
-                adjustment=section.components.get(adjustment_key),
+                adjustment=bill.adjustment(service),
                 meter_number=section.meter_number,
                 meter_reading=section.meter_reading,
                 previous_meter_reading=section.previous_meter_reading,
                 meter_unit=section.meter_unit,
                 heat_factor=section.heat_factor,
             )
-        return services, bill
-
-    async def _async_ensure_bill(self, current_bill: dict[str, Any] | None = None) -> Bill | None:
-        """Fetch and parse the latest bill PDF, cached per invoice (best-effort)."""
-        if not self._bill_loaded:
-            await self._async_load_saved_bill()
-        try:
-            bill = current_bill or await self._api.async_get_current_bill(self._account_id)
-            invoice = bill.get("invoiceId")
-            if not invoice:
-                return self._bill
-            if invoice == self._bill_invoice:
-                return self._bill
-            pdf = await self._api.async_get_bill_pdf(self._account_id, invoice)
-            if not pdf:
-                return self._bill
-            self._bill = await self.hass.async_add_executor_job(parse_bill, pdf)
-            self._bill_invoice = invoice
-            await self._bill_store.async_save(
-                {
-                    "parser_version": PARSER_VERSION,
-                    "invoice_id": invoice,
-                    "bill": bill_to_dict(self._bill),
-                }
-            )
-        except AlliantEnergyAuthError:
-            raise
-        except Exception as err:  # noqa: BLE001 - best-effort bill parsing
-            _LOGGER.warning("Could not read the bill PDF: %s", err)
-        return self._bill
-
-    async def _async_load_saved_bill(self) -> None:
-        """Reuse the bill saved by an earlier run, if it was parsed the same way."""
-        self._bill_loaded = True
-        try:
-            saved = await self._bill_store.async_load()
-            if not saved or saved.get("parser_version") != PARSER_VERSION:
-                return
-            self._bill = bill_from_dict(saved["bill"])
-            self._bill_invoice = saved["invoice_id"]
-        except Exception as err:  # noqa: BLE001 - a bad cache just means a new download
-            _LOGGER.debug("Ignoring the saved bill: %s", err)
+        return services
 
     async def _async_ensure_context(self) -> tuple[AlliantUsage, list[Meter]]:
         if not self._logged_in:
@@ -244,8 +192,8 @@ class LocalUtilityClient:
             if billed := [cycle.cost for cycle in cycles if cycle.cost]:
                 cost[meter.service_type] = billed[-1]
 
-        current_bill = await self._api.async_get_current_bill(self._account_id)
-        services, bill = await self._async_resolve_services(current_bill)
+        bill = await self._bills.latest()
+        services = self._services(bill)
         # Show the cost rate the cost statistic uses for the newest hour.
         tz = dt_util.get_default_time_zone()
         for service, known in self._known_rates(bill).items():
@@ -255,16 +203,17 @@ class LocalUtilityClient:
                 services[service] = replace(services[service], rate=value, rate_source=source)
         # Project each service's cost for the billing cycle in progress.
         for service, data in services.items():
-            section = _section(bill, service)
+            section = bill.section(service)
             if section is not None and section.period_end is not None:
                 services[service] = _project(
                     data,
                     daily_by_service.get(service, []),
                     section.period_end,
-                    _expected_next_read(bill, section),
+                    _expected_next_read(bill.itemized, section),
                 )
         projected = [d.projected_cost for d in services.values() if d.projected_cost is not None]
-        period = _section(bill, SERVICE_ELECTRIC) or _section(bill, SERVICE_GAS)
+        period = bill.section(SERVICE_ELECTRIC) or bill.section(SERVICE_GAS)
+        summary, itemized = bill.summary, bill.itemized
 
         electric = latest.get(SERVICE_ELECTRIC)
         gas = latest.get(SERVICE_GAS)
@@ -278,21 +227,21 @@ class LocalUtilityClient:
                 SERVICE_ELECTRIC: electric[0].isoformat() if electric else None,
                 SERVICE_GAS: gas[0].isoformat() if gas else None,
             },
-            amount_due=_to_float(current_bill.get("totalAmountDue")),
-            current_charges=_to_float(current_bill.get("currentCharges")),
-            past_due_amount=_to_float(current_bill.get("pastDueAmount")),
-            previous_balance=_to_float(current_bill.get("previousBalance")),
-            due_date=_parse_mdy(current_bill.get("netDueDate")),
-            invoice_date=_parse_mdy(current_bill.get("invoiceDate")),
-            invoice_id=current_bill.get("invoiceId"),
+            amount_due=summary.amount_due,
+            current_charges=summary.current_charges,
+            past_due_amount=summary.past_due_amount,
+            previous_balance=summary.previous_balance,
+            due_date=summary.due_date,
+            invoice_date=summary.invoice_date,
+            invoice_id=summary.invoice_id,
             services=services,
             billing_period_start=period.period_start if period else None,
             billing_period_end=period.period_end if period else None,
             billed_days=period.billed_days if period else None,
-            next_meter_read_start=bill.next_read_start if bill else None,
-            next_meter_read_end=bill.next_read_end if bill else None,
-            average_temperature=bill.average_temperature if bill else None,
-            degree_days=bill.degree_days if bill else None,
+            next_meter_read_start=itemized.next_read_start if itemized else None,
+            next_meter_read_end=itemized.next_read_end if itemized else None,
+            average_temperature=itemized.average_temperature if itemized else None,
+            degree_days=itemized.degree_days if itemized else None,
             projected_bill=round(sum(projected), 2) if projected else None,
         )
 
@@ -306,29 +255,13 @@ def _to_float(value: object) -> float | None:
         return None
 
 
-def _parse_mdy(value: object) -> date | None:
-    """Parse the API's ``MM-DD-YYYY`` date strings into a date."""
-    if not isinstance(value, str) or not value:
-        return None
-    try:
-        return datetime.strptime(value, "%m-%d-%Y").date()
-    except ValueError:
-        return None
-
-
 def _option_float(value: object) -> float | None:
     """Coerce a stored option to a positive float, or None if unset/invalid."""
     rate = _to_float(value)
     return rate if rate is not None and rate > 0 else None
 
 
-def _section(bill: Bill | None, service: str) -> ServiceBill | None:
-    if bill is None:
-        return None
-    return bill.electric if service == SERVICE_ELECTRIC else bill.gas
-
-
-def _expected_next_read(bill: Bill | None, section: ServiceBill) -> date | None:
+def _expected_next_read(bill: ItemizedBill | None, section: ServiceBill) -> date | None:
     """When the cycle in progress should end: the middle of the next read window.
 
     Falls back to the last period's length when the bill has no window.
@@ -375,8 +308,3 @@ def _project(
         cost_to_date=round(usage * data.rate + fixed * days, 2),
         projected_cost=round(usage / days * cycle_days * data.rate + fixed * cycle_days, 2),
     )
-
-
-def bill_store(hass: HomeAssistant, entry_id: str) -> Store[dict[str, Any]]:
-    """Where an entry's latest parsed bill is saved."""
-    return Store(hass, 1, f"{DOMAIN}.bill.{entry_id}")

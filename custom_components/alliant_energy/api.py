@@ -25,6 +25,7 @@ import logging
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from datetime import date, datetime
 from typing import TYPE_CHECKING, Any
 
 from curl_cffi.requests import AsyncSession
@@ -141,6 +142,19 @@ class UsageReading:
     reading_from: str | None
     reading_to: str | None
     unit: str | None
+
+
+@dataclass(frozen=True)
+class BillSummary:
+    """The headline figures of an account's most recent bill (bill/Current)."""
+
+    amount_due: float | None = None
+    current_charges: float | None = None
+    past_due_amount: float | None = None
+    previous_balance: float | None = None
+    due_date: date | None = None
+    invoice_date: date | None = None
+    invoice_id: str | None = None  # identifies the bill's itemized PDF
 
 
 def _sign(body: Any) -> str:
@@ -348,15 +362,24 @@ class AlliantEnergyApi:
             )
         return meters
 
-    async def async_get_current_bill(self, account_number: str) -> dict[str, Any]:
-        """Return the current bill summary (amount due, due date, invoice id)."""
+    async def async_get_current_bill(self, account_number: str) -> BillSummary:
+        """Return the bill summary of the account's most recent bill."""
         data = await self._request(
             "POST",
             _SCM_SERVICE + "bill/Current",
             body={"accountNumbers": [account_number]},
             signed=True,
         )
-        return data.get("data") or {}
+        bill = data.get("data") or {}
+        return BillSummary(
+            amount_due=_to_float(bill.get("totalAmountDue")),
+            current_charges=_to_float(bill.get("currentCharges")),
+            past_due_amount=_to_float(bill.get("pastDueAmount")),
+            previous_balance=_to_float(bill.get("previousBalance")),
+            due_date=_parse_mdy(bill.get("netDueDate")),
+            invoice_date=_parse_mdy(bill.get("invoiceDate")),
+            invoice_id=bill.get("invoiceId") or None,
+        )
 
     async def async_get_bill_pdf(
         self, account_number: str, invoice_id: str, doc_type: str = "BILL"
@@ -517,6 +540,16 @@ def _to_float(value: Any) -> float | None:
     try:
         return float(value)
     except TypeError, ValueError:
+        return None
+
+
+def _parse_mdy(value: Any) -> date | None:
+    """Parse the bill API's ``MM-DD-YYYY`` dates."""
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return datetime.strptime(value, "%m-%d-%Y").date()
+    except ValueError:
         return None
 
 

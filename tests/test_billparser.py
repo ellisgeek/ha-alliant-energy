@@ -5,7 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from custom_components.alliant_energy.billparser import parse_bill, parse_bill_text
+from custom_components.alliant_energy.api import SERVICE_ELECTRIC, SERVICE_GAS
+from custom_components.alliant_energy.billparser import ItemizedBill, parse_bill, parse_bill_text
 
 FIXTURES = Path(__file__).parent / "fixtures"
 # Text pdfplumber extracted from a real bill. Personal details are replaced, and
@@ -116,3 +117,16 @@ def test_saved_bill_round_trips() -> None:
     bill = parse_bill_text(REAL_BILL)
     saved = json.loads(json.dumps(bill_to_dict(bill)))
     assert bill_from_dict(saved) == bill
+
+
+def test_section_and_adjustment_by_service() -> None:
+    """The adjustment is the fuel adjustment for electric, the supply adjustment for gas."""
+    bill = parse_bill_text(REAL_BILL)
+    assert bill.electric is not None and bill.gas is not None
+
+    assert bill.section(SERVICE_ELECTRIC) is bill.electric
+    assert bill.section(SERVICE_GAS) is bill.gas
+    assert bill.adjustment(SERVICE_ELECTRIC) == bill.electric.components["fuel_adjustment"]
+    assert bill.adjustment(SERVICE_GAS) == bill.gas.components["supply_market_adj"]
+    assert ItemizedBill().section(SERVICE_GAS) is None
+    assert ItemizedBill().adjustment(SERVICE_GAS) is None
