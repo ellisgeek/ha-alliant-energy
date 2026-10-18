@@ -15,6 +15,7 @@ from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.storage import Store
 
 from . import statistics as stats
 from .api import (
@@ -28,7 +29,14 @@ from .api import (
     Meter,
     UsageReading,
 )
-from .billparser import Bill, ServiceBill, parse_bill
+from .billparser import (
+    PARSER_VERSION,
+    Bill,
+    ServiceBill,
+    bill_from_dict,
+    bill_to_dict,
+    parse_bill,
+)
 from .const import (
     CONF_ACCOUNT_ID,
     CONF_ELECTRICITY_RATE,
@@ -37,6 +45,7 @@ from .const import (
     CONF_PREMISE_ID,
     CONF_USERNAME,
     CURRENCY_USD,
+    DOMAIN,
 )
 from .models import (
     RATE_SOURCE_BILL,
@@ -72,9 +81,13 @@ class LocalUtilityClient:
         self._meters: list[Meter] | None = None
         self._premise: str | None = entry.data.get(CONF_PREMISE_ID)
         self._logged_in = False
-        # The latest bill PDF, parsed and cached per invoice.
+        # The latest bill PDF, parsed and cached per invoice. Also saved to a
+        # store so restarts and reloads reuse it: the PDF is downloaded only
+        # when a new invoice appears, about once a month.
         self._bill: Bill | None = None
         self._bill_invoice: str | None = None
+        self._bill_loaded = False
+        self._bill_store: Store[dict[str, Any]] = bill_store(hass, entry.entry_id)
 
     @property
     def _account_id(self) -> str:
@@ -158,6 +171,8 @@ class LocalUtilityClient:
 
     async def _async_ensure_bill(self, current_bill: dict[str, Any] | None = None) -> Bill | None:
         """Fetch and parse the latest bill PDF, cached per invoice (best-effort)."""
+        if not self._bill_loaded:
+            await self._async_load_saved_bill()
         try:
             bill = current_bill or await self._api.async_get_current_bill(self._account_id)
             invoice = bill.get("invoiceId")
@@ -170,11 +185,30 @@ class LocalUtilityClient:
                 return self._bill
             self._bill = await self.hass.async_add_executor_job(parse_bill, pdf)
             self._bill_invoice = invoice
+            await self._bill_store.async_save(
+                {
+                    "parser_version": PARSER_VERSION,
+                    "invoice_id": invoice,
+                    "bill": bill_to_dict(self._bill),
+                }
+            )
         except AlliantEnergyAuthError:
             raise
         except Exception as err:  # noqa: BLE001 - best-effort bill parsing
             _LOGGER.warning("Could not read the bill PDF: %s", err)
         return self._bill
+
+    async def _async_load_saved_bill(self) -> None:
+        """Reuse the bill saved by an earlier run, if it was parsed the same way."""
+        self._bill_loaded = True
+        try:
+            saved = await self._bill_store.async_load()
+            if not saved or saved.get("parser_version") != PARSER_VERSION:
+                return
+            self._bill = bill_from_dict(saved["bill"])
+            self._bill_invoice = saved["invoice_id"]
+        except Exception as err:  # noqa: BLE001 - a bad cache just means a new download
+            _LOGGER.debug("Ignoring the saved bill: %s", err)
 
     async def _async_ensure_context(self) -> tuple[str, list[Meter]]:
         if not self._logged_in:
@@ -395,3 +429,8 @@ def _project(
         cost_to_date=round(usage * data.rate + fixed * days, 2),
         projected_cost=round(usage / days * cycle_days * data.rate + fixed * cycle_days, 2),
     )
+
+
+def bill_store(hass: HomeAssistant, entry_id: str) -> Store[dict[str, Any]]:
+    """Where an entry's latest parsed bill is saved."""
+    return Store(hass, 1, f"{DOMAIN}.bill.{entry_id}")

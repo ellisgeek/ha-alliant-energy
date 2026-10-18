@@ -30,10 +30,14 @@ from __future__ import annotations
 import io
 import logging
 import re
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from datetime import date, datetime
+from typing import Any
 
 _LOGGER = logging.getLogger(__name__)
+
+# Bump when parsing changes what a bill yields, so saved bills are parsed again.
+PARSER_VERSION = 1
 
 SERVICE_ELECTRIC = "electric"
 SERVICE_GAS = "gas"
@@ -246,3 +250,39 @@ def _first_float(pattern: re.Pattern[str], lines: list[str]) -> float | None:
         if (m := pattern.match(line)) is not None:
             return float(m.group(1))
     return None
+
+
+def bill_to_dict(bill: Bill) -> dict[str, Any]:
+    """A JSON-safe dict of a :class:`Bill` (dates as ISO strings)."""
+    return _jsonable(asdict(bill))
+
+
+def bill_from_dict(data: dict[str, Any]) -> Bill:
+    """Rebuild a :class:`Bill` saved with :func:`bill_to_dict`."""
+    rest = {k: v for k, v in data.items() if k not in (SERVICE_ELECTRIC, SERVICE_GAS)}
+    return Bill(
+        electric=_service_from_dict(data.get(SERVICE_ELECTRIC)),
+        gas=_service_from_dict(data.get(SERVICE_GAS)),
+        **_dates(Bill, rest),
+    )
+
+
+def _service_from_dict(data: dict[str, Any] | None) -> ServiceBill | None:
+    return ServiceBill(**_dates(ServiceBill, data)) if data else None
+
+
+def _jsonable(value: Any) -> Any:
+    if isinstance(value, date):
+        return value.isoformat()
+    if isinstance(value, dict):
+        return {k: _jsonable(v) for k, v in value.items()}
+    return value
+
+
+def _dates(cls: type[Bill] | type[ServiceBill], data: dict[str, Any]) -> dict[str, Any]:
+    """Turn ISO strings back into dates for the date fields of a dataclass."""
+    date_fields = {f.name for f in fields(cls) if "date" in str(f.type)}
+    return {
+        k: date.fromisoformat(v) if k in date_fields and isinstance(v, str) else v
+        for k, v in data.items()
+    }

@@ -183,7 +183,8 @@ from the bill PDF, so they are empty if the PDF can't be read.
 ### Bill sensors
 
 These come from your latest itemized bill PDF and change once per bill. They
-show unknown if the bill can't be read.
+show unknown if the bill can't be read. The PDF is downloaded once per bill,
+when a new invoice appears, and kept across restarts.
 
 | Sensor | State | Attributes |
 | --- | --- | --- |

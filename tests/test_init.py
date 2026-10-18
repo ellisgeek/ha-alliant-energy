@@ -76,3 +76,15 @@ async def test_update_interval_defaults_to_a_day(hass: HomeAssistant, config_ent
         await hass.async_block_till_done()
 
     assert config_entry.runtime_data.update_interval == timedelta(hours=24)
+
+
+async def test_removing_the_entry_deletes_the_saved_bill(
+    hass: HomeAssistant, config_entry, hass_storage
+) -> None:
+    key = f"alliant_energy.bill.{config_entry.entry_id}"
+    hass_storage[key] = {"version": 1, "key": key, "data": {"parser_version": 1}}
+
+    await hass.config_entries.async_remove(config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert key not in hass_storage
