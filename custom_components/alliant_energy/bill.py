@@ -164,7 +164,7 @@ class PastBills:
     async def marginal_rates(self, service: str, since: date) -> list[MarginalRate]:
         """The service's marginal rate from each bill issued since a date.
 
-        None without a parser for the utility's bill layout: past bills are
+        Empty without a parser for the utility's bill layout: past bills are
         then not even listed.
         """
         if self._parser is None:
