@@ -46,8 +46,8 @@ class _Span:
 class CostRate:
     """The cost rate of every hour for one service.
 
-    Spans are in time order. An hour outside every span uses the nearest one:
-    the first span before the first, the last span after the last.
+    Spans are in time order. An hour in a gap uses the span that ended before
+    it; an hour before the first span uses the first.
     """
 
     def __init__(self, spans: list[_Span]) -> None:
@@ -73,13 +73,14 @@ class CostRate:
         return span.rate, span.source
 
     def _span(self, hour: datetime) -> _Span:
+        # The last span that starts at or before the hour: the one containing
+        # it, or, in a gap, the one that ended just before it.
+        found = self._spans[0]
         for span in self._spans:
-            if (span.start is None or span.start <= hour) and (span.end is None or hour < span.end):
-                return span
-        first = self._spans[0]
-        if first.start is not None and hour < first.start:
-            return first
-        return self._spans[-1]
+            if span.start is not None and span.start > hour:
+                break
+            found = span
+        return found
 
 
 def cost_identity(static: float | None) -> str:
@@ -104,9 +105,10 @@ def cost_rate(
     ]
     if marginal is not None:
         # The bill's marginal rate takes over from its billing cycle onward.
-        if marginal_from is None:
-            spans = []
-        else:
+        # Without the cycle's start, it takes over after the latest billed cycle.
+        if marginal_from is None and spans:
+            marginal_from = spans[-1].end
+        if marginal_from is not None:
             spans = [
                 _Span(span.start, min(span.end, marginal_from), span.rate, span.source)
                 for span in spans

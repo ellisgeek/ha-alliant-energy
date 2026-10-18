@@ -87,6 +87,8 @@ _RATE_CHUNK_DAYS = 365
 # priced under the rule before ADR 0012 and is repriced once.
 _STORE_KEY = f"{DOMAIN}.statistics"
 _STORE_VERSION = 1
+# Recorded in place of an identity while no cost rate is known.
+_NO_RATE = "none"
 
 # A statistic's last imported hour (UTC timestamp) and its running sum.
 _Last = tuple[float, float]
@@ -154,37 +156,49 @@ async def _async_update_meter(
         return
 
     cost_last = await _async_last(hass, cost_id)
-    reprice = cost_last is None or imported.cost_rates.get(cost_id) != cost_identity(known.static)
+    priced_with = imported.cost_rates.get(cost_id)
+    reprice = cost_last is None or priced_with != cost_identity(known.static)
+    # Cost is appended from the older of the two last imported hours.
+    since = cons_last[0] if reprice or cost_last is None else min(cons_last[0], cost_last[0])
+    rate = await _async_cost_rate(
+        api, account_number, premise_number, meter, tz, known, _local_date(since, tz)
+    )
 
-    # Fetch only from the older of the two last imported hours.
-    since = cons_last[0] if cost_last is None or reprice else min(cons_last[0], cost_last[0])
-    native = await _async_fetch_hourly(api, account_number, premise_number, meter, tz, since)
-
-    if not reprice:
-        rate = await _async_cost_rate(
-            api, account_number, premise_number, meter, tz, known, _local_date(since, tz)
+    if rate is None:
+        # No cost to add or reprice: import usage only, from the last usage hour.
+        native = await _async_fetch_hourly(
+            api, account_number, premise_number, meter, tz, cons_last[0]
         )
         _import_usage(hass, meter, cons_id, native, cons_last)
-        if rate is not None:
-            _import_cost(hass, meter, cost_id, native, rate, cost_last)
-        return
-
-    # Reprice the whole cost statistic: the usage already stored plus the new
-    # hours, without fetching the history again.
-    stored = await _async_hours(hass, cons_id)
-    _import_usage(hass, meter, cons_id, native, cons_last)
-    hours = stored + [(hour, value) for hour, value in native if hour.timestamp() > cons_last[0]]
-    if not hours:
-        return
-    rate = await _async_cost_rate(
-        api, account_number, premise_number, meter, tz, known, hours[0][0].astimezone(tz).date()
-    )
-    if rate is None:
-        if cost_last is not None:
+        if cost_last is not None and priced_with != _NO_RATE:
             _LOGGER.warning(
                 "No cost rate for %s; keeping its cost history and adding no new hours", cost_id
             )
+            imported.cost_rates[cost_id] = _NO_RATE  # reprices once a rate is back
+            await _async_save_imported(hass, imported)
         return
+
+    native = await _async_fetch_hourly(api, account_number, premise_number, meter, tz, since)
+    if not reprice:
+        _import_usage(hass, meter, cons_id, native, cons_last)
+        _import_cost(hass, meter, cost_id, native, rate, cost_last)
+        return
+
+    # Reprice the whole cost statistic: the usage already stored plus the new
+    # hours, without fetching the history again. Read the stored usage before
+    # adding the new hours to it.
+    by_hour = dict(await _async_hours(hass, cons_id))
+    _import_usage(hass, meter, cons_id, native, cons_last)
+    by_hour.update((hour, value) for hour, value in native if hour.timestamp() > cons_last[0])
+    hours = sorted(by_hour.items())
+    if not hours:
+        return
+    oldest = hours[0][0].astimezone(tz).date()
+    if oldest < _local_date(since, tz):
+        rate = (
+            await _async_cost_rate(api, account_number, premise_number, meter, tz, known, oldest)
+            or rate
+        )
     _LOGGER.info("Repricing the cost history of %s", cost_id)
     get_instance(hass).async_clear_statistics([cost_id])
     _import_cost(hass, meter, cost_id, hours, rate, None)
@@ -337,7 +351,7 @@ async def _async_billing_cycles(
     since: date,
 ) -> list[BillingCycle]:
     """Read a meter's billing cycles since a date, a year per request."""
-    cycles: list[BillingCycle] = []
+    cycles: dict[datetime, BillingCycle] = {}  # by start: a cycle can span two requests
     chunk_end = dt_util.now(tz).date()
     first = True
     while chunk_end >= since:
@@ -354,9 +368,9 @@ async def _async_billing_cycles(
             chunk_end.strftime(_DATE_FMT),
             periodicity=PERIODICITY_MONTHLY,
         )
-        cycles.extend(billing_cycles(readings, tz))
+        cycles.update((cycle.start, cycle) for cycle in billing_cycles(readings, tz))
         chunk_end = chunk_start - timedelta(days=1)
-    return cycles
+    return sorted(cycles.values(), key=lambda cycle: cycle.start)
 
 
 def billing_cycles(readings: list[UsageReading], tz: tzinfo) -> list[BillingCycle]:

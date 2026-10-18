@@ -260,6 +260,29 @@ async def test_rate_skips_a_billing_cycle_with_cost_zero(hass: HomeAssistant, ap
     assert data.services[SERVICE_ELECTRIC].rate_source == "billing_cycle"
 
 
+async def test_no_rate_without_options_bill_or_billing_cycles(hass: HomeAssistant, api) -> None:
+    client = LocalUtilityClient(hass, _entry(premise_id="P1"))
+    api.async_get_meters.return_value = [Meter("E1", "P1", SERVICE_ELECTRIC, {})]
+
+    data = await client.async_fetch_data()
+
+    assert data.services[SERVICE_ELECTRIC].rate is None
+    assert data.services[SERVICE_ELECTRIC].rate_source is None
+
+
+async def test_bill_without_a_period_still_shows_the_marginal_rate(
+    hass: HomeAssistant, api
+) -> None:
+    """Gas in the test bill has no period start; its marginal rate is current."""
+    client = LocalUtilityClient(hass, _entry(premise_id="P1"))
+    _with_bill(api)
+    with patch("custom_components.alliant_energy.provider.parse_bill", return_value=BILL):
+        data = await client.async_fetch_data()
+
+    gas = data.services[SERVICE_GAS]
+    assert (gas.rate, gas.rate_source) == (pytest.approx(0.508507), "bill")
+
+
 async def test_statistics_use_the_resolved_rates(hass: HomeAssistant, api) -> None:
     client = LocalUtilityClient(hass, _entry(options={"gas_rate": 1.1}, premise_id="P1"))
     _with_bill(api)

@@ -494,3 +494,48 @@ async def test_clearing_the_static_rate_without_a_fallback_keeps_the_cost_histor
 
     assert await _rows(hass, cost_id) == pytest.approx([(0.3, 0.3)])
     assert "keeping its cost history" in caplog.text
+
+
+async def test_no_cost_rate_warns_once_and_does_not_retry_the_reprice(hass, caplog) -> None:
+    """After a static rate is cleared with no fallback, later updates stay quiet."""
+    meter = Meter("E1", "P1", SERVICE_ELECTRIC, {})
+    await _run_meter(hass, _api(hourly=_hours("2026-10-07", [1.0])), meter, rate=0.30)
+
+    await _run_meter(hass, _api(hourly=_hours("2026-10-07", [1.0, 1.0])), meter)
+    await _run_meter(hass, _api(hourly=_hours("2026-10-07", [1.0, 1.0, 1.0])), meter)
+
+    assert caplog.text.count("keeping its cost history") == 1
+    assert "Repricing" not in caplog.text
+
+
+async def test_without_a_cost_rate_hourly_requests_start_at_the_last_usage_hour(hass) -> None:
+    """Cost that lags behind usage does not drag the hourly requests back."""
+    meter = Meter("E1", "P1", SERVICE_ELECTRIC, {})
+    cycle = [_monthly(100.0, 25.0, "2026-10-01T00:00:00+01:00", "2026-11-01T00:00:00+01:00")]
+    await _run_meter(hass, _api(hourly=_hours("2026-10-07", [1.0]), monthly=cycle), meter)
+    hours = [*_hours("2026-10-07", [1.0]), *_hours("2026-10-09", [1.0])]
+    await _run_meter(hass, _api(hourly=hours), meter)  # billing cycles gone: no rate
+
+    later = _api(hourly=hours)
+    await _run_meter(hass, later, meter)
+
+    assert _hh_requests(later) == [("10/09/2026", "10/17/2026")]
+
+
+async def test_reprice_covers_new_hours_and_happens_once(hass, caplog) -> None:
+    """Stored and newly fetched hours are repriced together; the next run appends."""
+    meter = Meter("E1", "P1", SERVICE_ELECTRIC, {})
+    cost_id = stats.statistic_id("acct", meter, "_cost")
+    await _run_meter(hass, _api(hourly=_hours("2026-10-07", [1.0])), meter, rate=0.10)
+
+    await _run_meter(hass, _api(hourly=_hours("2026-10-07", [1.0, 2.0])), meter, rate=0.20)
+    assert [v for row in await _rows(hass, cost_id) for v in row] == pytest.approx(
+        [0.2, 0.2, 0.4, 0.6]
+    )
+
+    caplog.clear()
+    await _run_meter(hass, _api(hourly=_hours("2026-10-07", [1.0, 2.0, 3.0])), meter, rate=0.20)
+    assert "Repricing" not in caplog.text
+    assert [v for row in await _rows(hass, cost_id) for v in row] == pytest.approx(
+        [0.2, 0.2, 0.4, 0.6, 0.6, 1.2]
+    )

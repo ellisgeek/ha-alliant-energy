@@ -9,7 +9,9 @@ at today's rate. So each hour of a cost statistic gets a cost rate this way: a
 static rate wins for every hour; otherwise the latest bill's marginal rate
 covers that service's billing cycle and every later hour, and older hours use
 their own billing cycle's effective rate. A billing cycle reported with cost 0
-counts as missing, and its hours use the nearest cycle that has a cost.
+counts as missing; an hour in a gap between cycles uses the cycle that ended
+before it. If the bill gives no billing cycle start, the marginal rate covers
+the hours after the latest billed cycle.
 
 A cost statistic is append-only: hours keep the cost rate they were imported
 with. When the next bill arrives, the previous cycle is not repriced, so each
@@ -37,4 +39,7 @@ history from Alliant again.
   at a marginal rate, because older effective rates include fixed charges.
 - Existing cost statistics, built under the old rule, are repriced once.
 - If a static rate is cleared and no other rate is available, existing cost
-  hours stay and no new ones are added.
+  hours stay and no new ones are added. The warning is logged once, and the
+  cost statistic is repriced when a rate is available again.
+- A full-history rebuild (ADR 0011) with no rate available clears the cost
+  statistic along with the usage, so both match the history limit.
