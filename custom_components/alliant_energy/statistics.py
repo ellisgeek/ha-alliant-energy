@@ -25,8 +25,9 @@ docs/adr/0012-price-old-hours-by-billing-cycle.md.
 
 from __future__ import annotations
 
+import asyncio
 import logging
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta, tzinfo
 from typing import Any
@@ -72,6 +73,7 @@ _RATE_LOOKBACK_DAYS = 400
 # were built with the default limit. A cost statistic without an identity was
 # priced under the rule before ADR 0012 and is repriced once.
 _STORE_KEY = f"{DOMAIN}.statistics"
+_STORE_LOCK = f"{DOMAIN}_statistics_store_lock"  # hass.data key
 _STORE_VERSION = 1
 # Recorded in place of an identity while no cost rate is known.
 _NO_RATE = "none"
@@ -150,8 +152,8 @@ async def _async_update_meter(
             _LOGGER.warning(
                 "No cost rate for %s; keeping its cost history and adding no new hours", cost_id
             )
-            imported.cost_rates[cost_id] = _NO_RATE  # reprices once a rate is back
-            await _async_save_imported(hass, imported)
+            # Reprices once a rate is back.
+            await _async_record(hass, lambda saved: saved.cost_rates.update({cost_id: _NO_RATE}))
         return
 
     native = await _async_fetch_hourly(usage, meter, tz, since)
@@ -175,8 +177,8 @@ async def _async_update_meter(
     _LOGGER.info("Repricing the cost history of %s", cost_id)
     get_instance(hass).async_clear_statistics([cost_id])
     _import_cost(hass, meter, cost_id, hours, rate, None)
-    imported.cost_rates[cost_id] = rate.identity
-    await _async_save_imported(hass, imported)
+    identity = rate.identity
+    await _async_record(hass, lambda saved: saved.cost_rates.update({cost_id: identity}))
 
 
 async def _async_import_full_history(
@@ -203,13 +205,16 @@ async def _async_import_full_history(
     # The recorder runs these in order: clear first, then the new imports.
     get_instance(hass).async_clear_statistics([cons_id, cost_id])
     _import_usage(hass, meter, cons_id, native, None)
-    imported = await _async_load_imported(hass)
-    imported.full_history[cons_id] = max_days
-    imported.cost_rates.pop(cost_id, None)
     if rate is not None:
         _import_cost(hass, meter, cost_id, native, rate, None)
-        imported.cost_rates[cost_id] = rate.identity
-    await _async_save_imported(hass, imported)
+
+    def _full_history(saved: _Imported) -> None:
+        saved.full_history[cons_id] = max_days
+        saved.cost_rates.pop(cost_id, None)
+        if rate is not None:
+            saved.cost_rates[cost_id] = rate.identity
+
+    await _async_record(hass, _full_history)
     _LOGGER.info("Imported %d hours for %s, back to %s", len(native), cons_id, oldest.isoformat())
 
 
@@ -276,6 +281,19 @@ async def _async_load_imported(hass: HomeAssistant) -> _Imported:
         full_history = {str(key): int(value) for key, value in stored.items()}
     cost_rates = {str(key): str(value) for key, value in (data.get("cost_rates") or {}).items()}
     return _Imported(full_history, cost_rates)
+
+
+async def _async_record(hass: HomeAssistant, change: Callable[[_Imported], None]) -> None:
+    """Change the store: read it fresh, apply ``change``, and save, under one lock.
+
+    Imports of several config entries share the store, so a copy read earlier
+    must never be saved over another entry's newer records (issue #12).
+    """
+    lock: asyncio.Lock = hass.data.setdefault(_STORE_LOCK, asyncio.Lock())
+    async with lock:
+        imported = await _async_load_imported(hass)
+        change(imported)
+        await _async_save_imported(hass, imported)
 
 
 async def _async_save_imported(hass: HomeAssistant, imported: _Imported) -> None:

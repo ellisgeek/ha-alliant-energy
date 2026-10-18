@@ -1,5 +1,6 @@
 """Tests for long-term statistics import."""
 
+import asyncio
 from datetime import UTC, date, datetime, timedelta
 from functools import partial
 from zoneinfo import ZoneInfo
@@ -488,3 +489,36 @@ async def test_billing_cycles_cover_the_oldest_hour_on_a_full_import(hass) -> No
     later = _usage(hourly=hours)
     await _run_meter(hass, later, meter)
     assert later.ranges("billing_cycles") == [("09/13/2025", "10/18/2026")]
+
+
+async def test_two_accounts_importing_at_once_both_keep_their_records(hass, hass_storage) -> None:
+    """Records of one account must survive the other's save (issue #12)."""
+    await hass.config.async_set_time_zone("America/Chicago")
+    meter = Meter("E1", "P1", SERVICE_ELECTRIC, {})
+    hours = _hours("2026-10-07", [1.0])
+
+    async def _import(account: str, rate: float) -> None:
+        await stats.async_update_statistics(
+            hass,
+            _usage(hourly=hours),
+            account,
+            [meter],
+            {SERVICE_ELECTRIC: KnownRates(static=rate)},
+        )
+
+    await _import("accta", 0.2)
+    await _import("acctb", 0.2)
+    await async_wait_recording_done(hass)
+    # Both change their static rate at once, so both reprice and save.
+    await asyncio.gather(_import("accta", 0.3), _import("acctb", 0.3))
+    await async_wait_recording_done(hass)
+
+    saved = hass_storage["alliant_energy.statistics"]["data"]
+    assert saved["cost_rates"] == {
+        stats.statistic_id("accta", meter, "_cost"): "static:0.3",
+        stats.statistic_id("acctb", meter, "_cost"): "static:0.3",
+    }
+    assert set(saved["full_history"]) == {
+        stats.statistic_id("accta", meter),
+        stats.statistic_id("acctb", meter),
+    }
