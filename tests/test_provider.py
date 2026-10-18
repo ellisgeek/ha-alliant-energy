@@ -1,5 +1,6 @@
 """Tests for the Home Assistant-facing provider client."""
 
+import asyncio
 from datetime import date
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -499,3 +500,19 @@ async def test_every_sensor_for_a_gas_only_account_without_a_bill(hass: HomeAssi
     )
     assert sensors["gas_meter_reading"][1] == "CCF"
     assert sensors["electricity_meter_reading"][1] == "kWh"
+
+
+async def test_overlapping_updates_log_in_once(hass: HomeAssistant, api) -> None:
+    """Each login is recorded as a device on the account (ADR 0007)."""
+
+    async def _login(username, password) -> None:
+        await asyncio.sleep(0)  # in flight: let the other update run
+
+    api.async_login.side_effect = _login
+    client = LocalUtilityClient(hass, _entry(premise_id="P1"))
+
+    await asyncio.gather(
+        client.async_fetch_data(), client.async_update_statistics(Bill(BillSummary()))
+    )
+
+    api.async_login.assert_awaited_once()

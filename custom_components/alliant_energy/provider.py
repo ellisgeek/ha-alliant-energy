@@ -7,6 +7,7 @@ dashboard, and produces the latest usage and most-recent bill cost for sensors.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import replace
 from datetime import date, timedelta
@@ -65,6 +66,7 @@ class LocalUtilityClient:
         self._premise: str | None = entry.data.get(CONF_PREMISE_ID)
         self._logged_in = False
         self._usage: AlliantUsage | None = None
+        self._context_lock = asyncio.Lock()
         self._bills = LatestBill(hass, self._api, self._account_id, entry.entry_id)
 
     @property
@@ -121,6 +123,12 @@ class LocalUtilityClient:
         return known
 
     async def _async_ensure_context(self) -> tuple[AlliantUsage, list[Meter]]:
+        # Overlapping updates (a refresh during a running import) must log in,
+        # and discover the premise and meters, only once (ADR 0007).
+        async with self._context_lock:
+            return await self._async_ensure_context_locked()
+
+    async def _async_ensure_context_locked(self) -> tuple[AlliantUsage, list[Meter]]:
         if not self._logged_in:
             await self._api.async_login(
                 self.entry.data[CONF_USERNAME], self.entry.data[CONF_PASSWORD]
