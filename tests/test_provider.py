@@ -12,10 +12,16 @@ from custom_components.alliant_energy.api import (
     SERVICE_ELECTRIC,
     SERVICE_GAS,
     Account,
+    BillSummary,
     Meter,
     UsageReading,
 )
-from custom_components.alliant_energy.billparser import Bill, ServiceBill
+from custom_components.alliant_energy.billparser import (
+    PARSER_VERSION,
+    ItemizedBill,
+    ServiceBill,
+    bill_to_dict,
+)
 from custom_components.alliant_energy.const import DOMAIN
 from custom_components.alliant_energy.models import ServiceData
 from custom_components.alliant_energy.provider import LocalUtilityClient
@@ -31,7 +37,7 @@ def api():
     instance.async_get_accounts = AsyncMock(return_value=[])
     instance.async_get_meters = AsyncMock(return_value=[])
     instance.async_get_usage = AsyncMock(return_value=[])
-    instance.async_get_current_bill = AsyncMock(return_value={})
+    instance.async_get_current_bill = AsyncMock(return_value=BillSummary())
     instance.async_get_bill_pdf = AsyncMock(return_value=None)
     instance.close = AsyncMock()
     with (
@@ -54,7 +60,7 @@ def _entry(options=None, **extra):
 
 
 # A parsed bill for both services.
-BILL = Bill(
+BILL = ItemizedBill(
     electric=ServiceBill(
         marginal_rate=0.16223,
         customer_charge_per_day=0.526,
@@ -88,9 +94,19 @@ BILL = Bill(
 )
 
 
-def _with_bill(api) -> None:
-    api.async_get_current_bill.return_value = {"invoiceId": "INV1"}
-    api.async_get_bill_pdf.return_value = b"%PDF"
+def _with_bill(api, hass_storage, client: LocalUtilityClient) -> None:
+    """Serve invoice INV1, already read and saved as ``BILL`` (no PDF download)."""
+    api.async_get_current_bill.return_value = BillSummary(invoice_id="INV1")
+    key = f"alliant_energy.bill.{client.entry.entry_id}"
+    hass_storage[key] = {
+        "version": 1,
+        "key": key,
+        "data": {
+            "parser_version": PARSER_VERSION,
+            "invoice_id": "INV1",
+            "bill": bill_to_dict(BILL),
+        },
+    }
 
 
 def _daily(usage, date):
@@ -205,12 +221,11 @@ async def test_close_releases_session(hass: HomeAssistant, api) -> None:
     api.close.assert_awaited_once()
 
 
-async def test_rates_prefer_options_then_bill(hass: HomeAssistant, api) -> None:
+async def test_rates_prefer_options_then_bill(hass: HomeAssistant, api, hass_storage) -> None:
     """A fixed rate from options wins; otherwise the bill's marginal rate is used."""
     client = LocalUtilityClient(hass, _entry(options={"electricity_rate": 0.2}, premise_id="P1"))
-    _with_bill(api)
-    with patch("custom_components.alliant_energy.provider.parse_bill", return_value=BILL):
-        data = await client.async_fetch_data()
+    _with_bill(api, hass_storage, client)
+    data = await client.async_fetch_data()
 
     electric = data.services[SERVICE_ELECTRIC]
     assert (electric.rate, electric.rate_source) == (0.2, "options")
@@ -272,23 +287,21 @@ async def test_no_rate_without_options_bill_or_billing_cycles(hass: HomeAssistan
 
 
 async def test_bill_without_a_period_still_shows_the_marginal_rate(
-    hass: HomeAssistant, api
+    hass: HomeAssistant, api, hass_storage
 ) -> None:
     """Gas in the test bill has no period start; its marginal rate is current."""
     client = LocalUtilityClient(hass, _entry(premise_id="P1"))
-    _with_bill(api)
-    with patch("custom_components.alliant_energy.provider.parse_bill", return_value=BILL):
-        data = await client.async_fetch_data()
+    _with_bill(api, hass_storage, client)
+    data = await client.async_fetch_data()
 
     gas = data.services[SERVICE_GAS]
     assert (gas.rate, gas.rate_source) == (pytest.approx(0.508507), "bill")
 
 
-async def test_statistics_use_the_resolved_rates(hass: HomeAssistant, api) -> None:
+async def test_statistics_use_the_resolved_rates(hass: HomeAssistant, api, hass_storage) -> None:
     client = LocalUtilityClient(hass, _entry(options={"gas_rate": 1.1}, premise_id="P1"))
-    _with_bill(api)
-    with patch("custom_components.alliant_energy.provider.parse_bill", return_value=BILL):
-        await client.async_update_statistics()
+    _with_bill(api, hass_storage, client)
+    await client.async_update_statistics()
 
     rates = api.update_statistics.await_args.kwargs["rates"]
     assert rates[SERVICE_ELECTRIC] == KnownRates(
@@ -297,7 +310,7 @@ async def test_statistics_use_the_resolved_rates(hass: HomeAssistant, api) -> No
     assert rates[SERVICE_GAS] == KnownRates(static=1.1, marginal=0.508507, marginal_from=None)
 
 
-async def test_bill_details_and_projection(hass: HomeAssistant, api) -> None:
+async def test_bill_details_and_projection(hass: HomeAssistant, api, hass_storage) -> None:
     """Bill details are exposed and the cycle in progress is projected."""
     client = LocalUtilityClient(hass, _entry(premise_id="P1"))
     api.async_get_meters.return_value = [Meter("E1", "P1", SERVICE_ELECTRIC, {})]
@@ -312,9 +325,8 @@ async def test_bill_details_and_projection(hass: HomeAssistant, api) -> None:
         },
         monthly_by_service={},
     )
-    _with_bill(api)
-    with patch("custom_components.alliant_energy.provider.parse_bill", return_value=BILL):
-        data = await client.async_fetch_data()
+    _with_bill(api, hass_storage, client)
+    data = await client.async_fetch_data()
 
     electric = data.services[SERVICE_ELECTRIC]
     assert electric.adjustment == pytest.approx(-0.00788)
@@ -337,45 +349,3 @@ async def test_bill_details_and_projection(hass: HomeAssistant, api) -> None:
     assert data.next_meter_read_start == date(2026, 11, 9)
     assert data.average_temperature == 60
     assert data.degree_days == 157
-
-
-async def test_saved_bill_is_reused_after_a_restart(hass: HomeAssistant, api) -> None:
-    """The PDF is downloaded once per invoice, not once per Home Assistant run."""
-    entry = _entry(premise_id="P1")
-    _with_bill(api)
-    with patch("custom_components.alliant_energy.provider.parse_bill", return_value=BILL):
-        await LocalUtilityClient(hass, entry).async_fetch_data()
-        api.async_get_bill_pdf.assert_awaited_once()
-
-        restarted = await LocalUtilityClient(hass, entry).async_fetch_data()
-
-    api.async_get_bill_pdf.assert_awaited_once()  # not downloaded again
-    assert restarted.services[SERVICE_ELECTRIC].rate_plan == "RG1"
-    assert restarted.billing_period_end == date(2026, 10, 12)
-
-
-async def test_new_invoice_downloads_the_new_bill(hass: HomeAssistant, api) -> None:
-    entry = _entry(premise_id="P1")
-    _with_bill(api)
-    with patch("custom_components.alliant_energy.provider.parse_bill", return_value=BILL):
-        await LocalUtilityClient(hass, entry).async_fetch_data()
-        api.async_get_current_bill.return_value = {"invoiceId": "INV2"}
-        await LocalUtilityClient(hass, entry).async_fetch_data()
-
-    assert api.async_get_bill_pdf.await_count == 2
-
-
-async def test_saved_bill_from_another_parser_version_is_parsed_again(
-    hass: HomeAssistant, api, hass_storage
-) -> None:
-    entry = _entry(premise_id="P1")
-    hass_storage[f"alliant_energy.bill.{entry.entry_id}"] = {
-        "version": 1,
-        "key": f"alliant_energy.bill.{entry.entry_id}",
-        "data": {"parser_version": 0, "invoice_id": "INV1", "bill": {}},
-    }
-    _with_bill(api)
-    with patch("custom_components.alliant_energy.provider.parse_bill", return_value=BILL):
-        await LocalUtilityClient(hass, entry).async_fetch_data()
-
-    api.async_get_bill_pdf.assert_awaited_once()

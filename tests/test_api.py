@@ -8,6 +8,7 @@ network.
 import asyncio
 import hashlib
 import json
+from datetime import date
 from typing import Any
 
 import pytest
@@ -19,6 +20,7 @@ from custom_components.alliant_energy.api import (
     AlliantEnergyApi,
     AlliantEnergyAuthError,
     AlliantEnergyError,
+    BillSummary,
     _sign,
 )
 
@@ -354,3 +356,42 @@ async def test_failed_request_still_counts_toward_the_pause() -> None:
     await api.async_get_current_bill("acct")
 
     assert time.sleeps == pytest.approx([0.5])
+
+
+async def test_current_bill_is_a_typed_bill_summary() -> None:
+    api, _session = _api(
+        _FakeResponse(
+            200,
+            {
+                "data": {
+                    "totalAmountDue": "123.45",
+                    "currentCharges": 120.0,
+                    "pastDueAmount": "",
+                    "previousBalance": "bad",
+                    "netDueDate": "11-03-2026",
+                    "invoiceDate": "not a date",
+                    "invoiceId": "INV1",
+                }
+            },
+        )
+    )
+    api._access_token = "token"
+
+    summary = await api.async_get_current_bill("acct")
+
+    assert summary == BillSummary(
+        amount_due=123.45,
+        current_charges=120.0,
+        past_due_amount=None,
+        previous_balance=None,
+        due_date=date(2026, 11, 3),
+        invoice_date=None,
+        invoice_id="INV1",
+    )
+
+
+async def test_empty_current_bill_is_an_empty_summary() -> None:
+    api, _session = _api(_FakeResponse(200, {"data": None}))
+    api._access_token = "token"
+
+    assert await api.async_get_current_bill("acct") == BillSummary()
