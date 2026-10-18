@@ -286,3 +286,45 @@ async def test_bill_details_and_projection(hass: HomeAssistant, api) -> None:
     assert data.next_meter_read_start == date(2026, 11, 9)
     assert data.average_temperature == 60
     assert data.degree_days == 157
+
+
+async def test_saved_bill_is_reused_after_a_restart(hass: HomeAssistant, api) -> None:
+    """The PDF is downloaded once per invoice, not once per Home Assistant run."""
+    entry = _entry(premise_id="P1")
+    _with_bill(api)
+    with patch("custom_components.alliant_energy.provider.parse_bill", return_value=BILL):
+        await LocalUtilityClient(hass, entry).async_fetch_data()
+        api.async_get_bill_pdf.assert_awaited_once()
+
+        restarted = await LocalUtilityClient(hass, entry).async_fetch_data()
+
+    api.async_get_bill_pdf.assert_awaited_once()  # not downloaded again
+    assert restarted.services[SERVICE_ELECTRIC].rate_plan == "RG1"
+    assert restarted.billing_period_end == date(2026, 10, 12)
+
+
+async def test_new_invoice_downloads_the_new_bill(hass: HomeAssistant, api) -> None:
+    entry = _entry(premise_id="P1")
+    _with_bill(api)
+    with patch("custom_components.alliant_energy.provider.parse_bill", return_value=BILL):
+        await LocalUtilityClient(hass, entry).async_fetch_data()
+        api.async_get_current_bill.return_value = {"invoiceId": "INV2"}
+        await LocalUtilityClient(hass, entry).async_fetch_data()
+
+    assert api.async_get_bill_pdf.await_count == 2
+
+
+async def test_saved_bill_from_another_parser_version_is_parsed_again(
+    hass: HomeAssistant, api, hass_storage
+) -> None:
+    entry = _entry(premise_id="P1")
+    hass_storage[f"alliant_energy.bill.{entry.entry_id}"] = {
+        "version": 1,
+        "key": f"alliant_energy.bill.{entry.entry_id}",
+        "data": {"parser_version": 0, "invoice_id": "INV1", "bill": {}},
+    }
+    _with_bill(api)
+    with patch("custom_components.alliant_energy.provider.parse_bill", return_value=BILL):
+        await LocalUtilityClient(hass, entry).async_fetch_data()
+
+    api.async_get_bill_pdf.assert_awaited_once()

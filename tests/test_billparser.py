@@ -105,3 +105,14 @@ def test_section_without_charges_has_no_marginal_rate() -> None:
     assert gas.marginal_rate is None
     assert gas.rate_plan == "GG1"
     assert gas.period_end is None  # no bill date, no meter line
+
+
+def test_saved_bill_round_trips() -> None:
+    """A bill saved as JSON loads back unchanged."""
+    import json
+
+    from custom_components.alliant_energy.billparser import bill_from_dict, bill_to_dict
+
+    bill = parse_bill_text(REAL_BILL)
+    saved = json.loads(json.dumps(bill_to_dict(bill)))
+    assert bill_from_dict(saved) == bill

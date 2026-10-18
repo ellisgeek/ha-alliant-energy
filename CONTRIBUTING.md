@@ -79,6 +79,10 @@ IP address (the portal has a lock counter).
   tests and ty), not in `[project] dependencies`: adding it there once made
   uv drop the recorder's test-only packages (`psutil-home-assistant`,
   `fnv-hash-fast`).
+- **Saved bills.** The parsed bill is saved per config entry and reused until
+  a new invoice appears. When a parser change alters what a bill yields, bump
+  `PARSER_VERSION` in `billparser.py`, or saved bills keep the old result until
+  the next bill.
 - **Brand images.** `brand/` holds Alliant Energy's logo (icon, logo, and
   dark-mode logo), taken from a bill. It is their trademark, used knowingly; if
   Alliant objects, replace the files with a generic icon.

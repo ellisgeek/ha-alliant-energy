@@ -11,7 +11,7 @@ from homeassistant.helpers.event import async_track_time_interval
 
 from .coordinator import AlliantEnergyConfigEntry, EnergyCoordinator
 from .options import update_interval
-from .provider import AlliantEnergyAuthError, LocalUtilityClient
+from .provider import AlliantEnergyAuthError, LocalUtilityClient, bill_store
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -63,3 +63,8 @@ async def async_unload_entry(hass: HomeAssistant, entry: AlliantEnergyConfigEntr
     if unloaded:
         await entry.runtime_data.client.async_close()
     return unloaded
+
+
+async def async_remove_entry(hass: HomeAssistant, entry: AlliantEnergyConfigEntry) -> None:
+    """Delete the saved bill when the integration is removed."""
+    await bill_store(hass, entry.entry_id).async_remove()
