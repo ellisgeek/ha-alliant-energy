@@ -79,8 +79,9 @@ IP address (the portal has a lock counter).
   tests and ty), not in `[project] dependencies`: adding it there once made
   uv drop the recorder's test-only packages (`psutil-home-assistant`,
   `fnv-hash-fast`).
-- **Brand icon.** `brand/icon.png` is a generic lightning bolt on purpose. Do
-  not replace it with Alliant's logo, which is their trademark.
+- **Brand images.** `brand/` holds Alliant Energy's logo (icon, logo, and
+  dark-mode logo), taken from a bill. It is their trademark, used knowingly; if
+  Alliant objects, replace the files with a generic icon.
 
 ## Workflow testing
 
