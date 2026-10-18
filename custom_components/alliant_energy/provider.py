@@ -22,7 +22,6 @@ from .api import (
     AlliantEnergyApi,
     AlliantEnergyAuthError,
     AlliantEnergyError,
-    BillSummary,
     Meter,
 )
 from .bill import Bill, LatestBill
@@ -85,23 +84,15 @@ class LocalUtilityClient:
             raise
         return await self._async_build_energy_data(usage, meters)
 
-    async def async_update_statistics(self) -> None:
+    async def async_update_statistics(self, bill: Bill) -> None:
         """Import hourly long-term statistics for the Energy dashboard.
 
-        Run as a background task (see __init__) so the initial history backfill
-        does not block config-entry setup.
+        Runs as a background task after each sensor refresh (see __init__),
+        priced with the bill that refresh fetched, so the history backfill does
+        not block setup.
         """
         try:
             usage, meters = await self._async_ensure_context()
-            try:
-                bill = await self._bills.latest()
-            except AlliantEnergyAuthError:
-                raise
-            except Exception as err:  # noqa: BLE001 - keep pricing with the last bill read
-                # Imported cost keeps its rate for good (ADR 0012), so keep the
-                # marginal rate from the itemized bill already read.
-                _LOGGER.warning("Could not fetch the bill summary: %s", err)
-                bill = Bill(BillSummary(), await self._bills.last_read())
             await stats.async_update_statistics(
                 self.hass,
                 usage,

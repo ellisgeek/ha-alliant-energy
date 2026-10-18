@@ -78,13 +78,6 @@ class LatestBill:
                 await self._async_read_pdf(invoice)
             return Bill(summary, self._itemized)
 
-    async def last_read(self) -> ItemizedBill | None:
-        """The last itemized bill read (saved across restarts), without a request."""
-        async with self._lock:
-            if not self._loaded:
-                await self._async_load_saved()
-            return self._itemized
-
     async def _async_read_pdf(self, invoice: str) -> None:
         try:
             pdf = await self._api.async_get_bill_pdf(self._account, invoice)

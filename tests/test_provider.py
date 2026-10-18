@@ -17,6 +17,7 @@ from custom_components.alliant_energy.api import (
     Meter,
     UsageReading,
 )
+from custom_components.alliant_energy.bill import Bill
 from custom_components.alliant_energy.billparser import (
     PARSER_VERSION,
     ItemizedBill,
@@ -182,7 +183,7 @@ async def test_update_statistics_delegates_to_importer(hass: HomeAssistant, api)
     meters = [Meter("E1", "P1", SERVICE_ELECTRIC, {})]
     api.async_get_meters.return_value = meters
 
-    await client.async_update_statistics()
+    await client.async_update_statistics(Bill(BillSummary()))
 
     api.update_statistics.assert_awaited_once()
     # Called with (hass, usage, account, meters).
@@ -303,10 +304,14 @@ async def test_bill_without_a_period_still_shows_the_marginal_rate(
     assert (gas.rate, gas.rate_source) == (pytest.approx(0.508507), "bill")
 
 
-async def test_statistics_use_the_resolved_rates(hass: HomeAssistant, api, hass_storage) -> None:
+async def test_statistics_use_the_rates_of_the_bill_they_are_given(
+    hass: HomeAssistant, api
+) -> None:
+    """The refresh's bill prices the import; the bill is not fetched again."""
     client = LocalUtilityClient(hass, _entry(options={"gas_rate": 1.1}, premise_id="P1"))
-    _with_bill(api, hass_storage, client)
-    await client.async_update_statistics()
+    await client.async_update_statistics(Bill(BillSummary(invoice_id="INV1"), BILL))
+
+    api.async_get_current_bill.assert_not_awaited()
 
     rates = api.update_statistics.await_args.kwargs["rates"]
     assert rates[SERVICE_ELECTRIC] == KnownRates(
@@ -350,21 +355,6 @@ async def test_bill_details_and_projection(hass: HomeAssistant, api, hass_storag
 
     assert data.billing_period == BILL.electric
     assert data.bill.itemized == BILL
-
-
-async def test_statistics_keep_the_saved_marginal_rate_when_the_bill_summary_fails(
-    hass: HomeAssistant, api, hass_storage
-) -> None:
-    """Imported cost keeps its rate for good (ADR 0012), so the saved bill still counts."""
-    client = LocalUtilityClient(hass, _entry(premise_id="P1"))
-    _with_bill(api, hass_storage, client)
-    api.async_get_current_bill.side_effect = AlliantEnergyError("HTTP 500")
-
-    await client.async_update_statistics()
-
-    rates = api.update_statistics.await_args.kwargs["rates"]
-    assert rates[SERVICE_ELECTRIC].marginal == pytest.approx(0.16223)
-    assert rates[SERVICE_ELECTRIC].marginal_from == date(2026, 9, 11)
 
 
 async def test_sensor_refresh_fails_when_the_bill_summary_fails(hass: HomeAssistant, api) -> None:
