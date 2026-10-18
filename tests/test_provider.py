@@ -20,6 +20,7 @@ from custom_components.alliant_energy.const import DOMAIN
 from custom_components.alliant_energy.models import ServiceData
 from custom_components.alliant_energy.provider import LocalUtilityClient
 from custom_components.alliant_energy.rates import KnownRates
+from custom_components.alliant_energy.usage import AlliantUsage
 
 
 @pytest.fixture
@@ -114,7 +115,7 @@ def _monthly(cost, period_to, period_from=None):
 
 
 def _usage_router(daily_by_service, monthly_by_service):
-    async def _get(service_type, account, premise, meter, frm, to, periodicity=PERIODICITY_DAILY):
+    async def _get(*, service_type, periodicity=PERIODICITY_DAILY, **_request):
         if periodicity == PERIODICITY_DAILY:
             return daily_by_service.get(service_type, [])
         return monthly_by_service.get(service_type, [])
@@ -164,11 +165,11 @@ async def test_update_statistics_delegates_to_importer(hass: HomeAssistant, api)
     await client.async_update_statistics()
 
     api.update_statistics.assert_awaited_once()
-    # Called with (hass, api, account, premise, meters).
+    # Called with (hass, usage, account, meters).
     args = api.update_statistics.await_args[0]
+    assert isinstance(args[1], AlliantUsage)
     assert args[2] == "acct-1"
-    assert args[3] == "P1"
-    assert args[4] == meters
+    assert args[3] == meters
 
 
 async def test_premise_is_discovered_when_not_configured(hass: HomeAssistant, api) -> None:

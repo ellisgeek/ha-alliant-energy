@@ -28,6 +28,9 @@ DEFAULT_UPDATE_INTERVAL_HOURS = 24
 # Alliant bills in US dollars; electric is kWh and gas is therms.
 CURRENCY_USD = "USD"
 
+# Pause between consecutive usage requests, to keep the load gentle (ADR 0007).
+REQUEST_PAUSE_SECONDS = 0.5
+
 # Long-term statistics (Energy dashboard) settings.
 # A meter's first import walks back through the API in chunks until this many
 # chunks in a row come back empty (the start of its history), but never further
