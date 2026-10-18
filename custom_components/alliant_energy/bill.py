@@ -77,7 +77,7 @@ class LatestBill:
         bill read, and the next call tries the new PDF again. Without a parser,
         the PDF is never downloaded.
         """
-        if self._parser is None:
+        if (parser := self._parser) is None:
             return Bill(await self._api.async_get_current_bill(self._account))
         async with self._lock:
             if not self._loaded:
@@ -85,17 +85,15 @@ class LatestBill:
             summary = await self._api.async_get_current_bill(self._account)
             invoice = summary.invoice_id
             if invoice and invoice != self._invoice:
-                await self._async_read_pdf(invoice)
+                await self._async_read_pdf(invoice, parser)
             return Bill(summary, self._itemized)
 
-    async def _async_read_pdf(self, invoice: str) -> None:
-        if self._parser is None:
-            return
+    async def _async_read_pdf(self, invoice: str, parser: Callable[[bytes], ItemizedBill]) -> None:
         try:
             pdf = await self._api.async_get_bill_pdf(self._account, invoice)
             if not pdf:
                 return
-            self._itemized = await self._hass.async_add_executor_job(self._parser, pdf)
+            self._itemized = await self._hass.async_add_executor_job(parser, pdf)
             self._invoice = invoice
             await self._store.async_save(
                 {
