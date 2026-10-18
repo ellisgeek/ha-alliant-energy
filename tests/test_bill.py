@@ -18,7 +18,13 @@ from custom_components.alliant_energy.api import (
     PastBill,
 )
 from custom_components.alliant_energy.bill import LatestBill, PastBills, async_forget_bill
-from custom_components.alliant_energy.billparser import PARSER_VERSION, bill_to_dict, parse_bill
+from custom_components.alliant_energy.billparser import (
+    PARSER_VERSION,
+    ItemizedBill,
+    ServiceBill,
+    bill_to_dict,
+    parse_bill,
+)
 from custom_components.alliant_energy.rates import MarginalRate
 
 PDF = (Path(__file__).parent / "fixtures" / "bill_2026_10.pdf").read_bytes()
@@ -340,3 +346,50 @@ async def test_without_a_parser_past_bills_are_not_even_listed(hass: HomeAssista
     assert await past.marginal_rates(SERVICE_ELECTRIC, date(2026, 9, 1)) == []
     assert api.history_requests == []
     assert api.downloads == []
+
+
+async def test_past_bill_without_a_rate_for_the_service_gives_none(
+    hass: HomeAssistant,
+) -> None:
+    """Like a first bill with no usage charges: nothing to price that cycle with."""
+
+    def _parse(pdf: bytes) -> ItemizedBill:
+        return ItemizedBill(gas=ServiceBill(marginal_rate=None, period_start=date(2026, 9, 1)))
+
+    api = FakeApi()
+    api.history = [PastBill("INV1", date(2026, 9, 11))]
+    past = PastBills(hass, cast(AlliantEnergyApi, api), "acct", "entry1", _parse)
+
+    assert await past.marginal_rates(SERVICE_GAS, date(2026, 9, 1)) == []
+    assert await past.marginal_rates(SERVICE_ELECTRIC, date(2026, 9, 1)) == []
+
+
+async def test_auth_error_while_listing_past_bills_is_raised(hass: HomeAssistant) -> None:
+    api = FakeApi()
+    api.history = AlliantEnergyAuthError("expired")
+
+    with pytest.raises(AlliantEnergyAuthError):
+        await _past(hass, api).marginal_rates(SERVICE_ELECTRIC, date(2026, 9, 1))
+
+
+async def test_empty_past_pdf_gives_no_rate(hass: HomeAssistant, hass_storage) -> None:
+    api = FakeApi(pdf=None)
+    api.history = [PastBill("INV1", date(2026, 10, 13))]
+
+    assert await _past(hass, api).marginal_rates(SERVICE_ELECTRIC, date(2026, 9, 1)) == []
+    assert "alliant_energy.bills.entry1" not in hass_storage
+
+
+async def test_corrupt_saved_past_bills_are_read_again(hass: HomeAssistant, hass_storage) -> None:
+    hass_storage["alliant_energy.bills.entry1"] = {
+        "version": 1,
+        "key": "alliant_energy.bills.entry1",
+        "data": {"parser_version": PARSER_VERSION, "bills": {"INV1": {"electric": 5}}},
+    }
+    api = FakeApi()
+    api.history = [PastBill("INV1", date(2026, 10, 13))]
+
+    rates = await _past(hass, api).marginal_rates(SERVICE_ELECTRIC, date(2026, 9, 1))
+
+    assert rates == [MarginalRate(0.15235, date(2027, 1, 6))]
+    assert api.downloads == ["INV1"]
