@@ -166,6 +166,14 @@ fees, and taxes. Your Energy dashboard cost is therefore lower than your bill
 total. The **Current charges** sensor shows the real bill total. See
 [ADR 0005](docs/adr/0005-cost-rate-precedence.md) for the reasoning.
 
+A fixed rate applies to all your history. Without one, the marginal rate
+applies from the start of your latest bill's billing cycle. Older hours use
+their own billing cycle's effective rate, so cost steps down where the
+marginal rate begins. Hours keep the rate they were imported with: a new bill
+prices only new hours. Changing the fixed rate reprices your whole cost
+history from the usage already stored. See
+[ADR 0012](docs/adr/0012-price-old-hours-by-billing-cycle.md).
+
 ### Rate sensors
 
 | Sensor | State | Attributes |

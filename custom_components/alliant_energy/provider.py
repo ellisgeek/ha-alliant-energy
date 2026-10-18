@@ -13,6 +13,7 @@ from dataclasses import replace
 from datetime import date, datetime, timedelta
 from typing import Any
 
+import homeassistant.util.dt as dt_util
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.storage import Store
@@ -47,14 +48,9 @@ from .const import (
     CURRENCY_USD,
     DOMAIN,
 )
-from .models import (
-    RATE_SOURCE_BILL,
-    RATE_SOURCE_BILLING_CYCLE,
-    RATE_SOURCE_OPTIONS,
-    EnergyData,
-    ServiceData,
-)
+from .models import RATE_SOURCE_BILLING_CYCLE, EnergyData, ServiceData
 from .options import max_history_days
+from .rates import KnownRates, known_cost_rate
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -114,49 +110,50 @@ class LocalUtilityClient:
         """
         try:
             premise, meters = await self._async_ensure_context()
-            services, _bill = await self._async_resolve_services()
+            bill = await self._async_ensure_bill()
             await stats.async_update_statistics(
                 self.hass,
                 self._api,
                 self._account_id,
                 premise,
                 meters,
-                electricity_rate=services[SERVICE_ELECTRIC].rate,
-                gas_rate=services[SERVICE_GAS].rate,
+                rates=self._known_rates(bill),
                 max_history_days=max_history_days(self.entry),
             )
         except AlliantEnergyAuthError:
             self._logged_in = False
             raise
 
+    def _known_rates(self, bill: Bill | None) -> dict[str, KnownRates]:
+        """Each service's static rate (options) and marginal rate (bill PDF)."""
+        known: dict[str, KnownRates] = {}
+        for service, option_key in (
+            (SERVICE_ELECTRIC, CONF_ELECTRICITY_RATE),
+            (SERVICE_GAS, CONF_GAS_RATE),
+        ):
+            section = _section(bill, service)
+            known[service] = KnownRates(
+                static=_option_float(self.entry.options.get(option_key)),
+                marginal=section.marginal_rate if section else None,
+                marginal_from=section.period_start if section else None,
+            )
+        return known
+
     async def _async_resolve_services(
         self, current_bill: dict[str, Any] | None = None
     ) -> tuple[dict[str, ServiceData], Bill | None]:
-        """Resolve each service's rate and bill details.
-
-        Rate precedence: a static rate from options, else the marginal rate
-        parsed from the latest bill PDF, else None (the statistics importer then
-        falls back to an effective rate per billing cycle). Everything else
-        comes from the bill PDF.
-        """
+        """Resolve each service's bill details from the latest bill PDF."""
         bill = await self._async_ensure_bill(current_bill)
         services: dict[str, ServiceData] = {}
-        for service, option_key, adjustment_key in (
-            (SERVICE_ELECTRIC, CONF_ELECTRICITY_RATE, "fuel_adjustment"),
-            (SERVICE_GAS, CONF_GAS_RATE, "supply_market_adj"),
+        for service, adjustment_key in (
+            (SERVICE_ELECTRIC, "fuel_adjustment"),
+            (SERVICE_GAS, "supply_market_adj"),
         ):
             section = _section(bill, service)
-            rate, source = None, None
-            if (option := _option_float(self.entry.options.get(option_key))) is not None:
-                rate, source = option, RATE_SOURCE_OPTIONS
-            elif section is not None and section.marginal_rate is not None:
-                rate, source = section.marginal_rate, RATE_SOURCE_BILL
             if section is None:
-                services[service] = ServiceData(rate=rate, rate_source=source)
+                services[service] = ServiceData()
                 continue
             services[service] = ServiceData(
-                rate=rate,
-                rate_source=source,
                 rate_plan=section.rate_plan,
                 rate_plan_name=section.rate_plan_name,
                 customer_charge_per_day=section.customer_charge_per_day,
@@ -235,6 +232,7 @@ class LocalUtilityClient:
 
         latest: dict[str, UsageReading] = {}
         daily_by_service: dict[str, list[UsageReading]] = {}
+        monthly_by_service: dict[str, list[UsageReading]] = {}
         cost: dict[str, UsageReading] = {}
         for meter in meters:
             daily = await self._api.async_get_usage(
@@ -259,21 +257,19 @@ class LocalUtilityClient:
                 to_date,
                 periodicity=PERIODICITY_MONTHLY,
             )
+            monthly_by_service[meter.service_type] = monthly
             if (bill := _latest(monthly, _has_cost)) is not None:
                 cost[meter.service_type] = bill
 
         current_bill = await self._api.async_get_current_bill(self._account_id)
         services, bill = await self._async_resolve_services(current_bill)
-        # Without a fixed or bill rate, show the latest billing cycle's
-        # effective rate, as the cost statistics use for recent hours.
-        for service, reading in cost.items():
-            data = services[service]
-            if data.rate is None and reading.cost is not None and reading.usage:
-                services[service] = replace(
-                    data,
-                    rate=reading.cost / reading.usage,
-                    rate_source=RATE_SOURCE_BILLING_CYCLE,
-                )
+        # Show the cost rate the cost statistic uses for the newest hour.
+        tz = dt_util.get_default_time_zone()
+        for service, known in self._known_rates(bill).items():
+            cycles = stats.billing_cycles(monthly_by_service.get(service, []), tz)
+            if (rate := known_cost_rate(known, cycles, tz)) is not None:
+                value, source = rate.current
+                services[service] = replace(services[service], rate=value, rate_source=source)
         # Project each service's cost for the billing cycle in progress.
         for service, data in services.items():
             section = _section(bill, service)

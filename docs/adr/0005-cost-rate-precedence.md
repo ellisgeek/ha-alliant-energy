@@ -22,3 +22,6 @@ The cost statistic is lower than the bill total because fixed charges are left
 out. The bill total is shown by the bill summary sensors instead. PDF parsing
 depends on the layout and is best-effort: on any failure it falls back to the
 effective rate and never fails the import.
+
+See [ADR 0012](0012-price-old-hours-by-billing-cycle.md) for which rate prices
+each hour of history.

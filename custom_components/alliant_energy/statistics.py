@@ -16,19 +16,20 @@ Usage is stored in the meter's native unit: kWh for electric and therms
 (``thm``) for gas, both energy units the Energy dashboard accepts (see
 docs/adr/0010-store-gas-in-therms.md).
 
-Cost statistics are imported alongside consumption when a rate is available.
-The caller resolves a static or bill-PDF marginal rate per service; without one,
-an effective rate per billing cycle is derived from the monthly bill
-(amount / consumption). See docs/adr/0005-cost-rate-precedence.md.
+Cost statistics are imported alongside consumption when a cost rate is known
+(see :mod:`.rates`). Cost is append-only: imported hours keep the rate they were
+priced with. Only a change to the static rate reprices a cost statistic, from
+the hourly usage already stored, with no new history requests. See
+docs/adr/0012-price-old-hours-by-billing-cycle.md.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable
-from datetime import date, datetime, timedelta, tzinfo
-from functools import partial
+from collections.abc import Mapping
+from dataclasses import dataclass, field
+from datetime import UTC, date, datetime, timedelta, tzinfo
 from typing import Any
 
 import homeassistant.util.dt as dt_util
@@ -40,6 +41,7 @@ from homeassistant.components.recorder.models import (
 from homeassistant.components.recorder.statistics import (
     async_add_external_statistics,
     get_last_statistics,
+    statistics_during_period,
 )
 from homeassistant.const import UnitOfEnergy
 from homeassistant.core import HomeAssistant
@@ -50,7 +52,6 @@ from homeassistant.util.unit_conversion import EnergyConverter
 from .api import (
     PERIODICITY_HOURLY,
     PERIODICITY_MONTHLY,
-    SERVICE_ELECTRIC,
     SERVICE_GAS,
     AlliantEnergyApi,
     AlliantEnergyAuthError,
@@ -65,28 +66,42 @@ from .const import (
     STATISTICS_EMPTY_CHUNKS,
     STATISTICS_LAG_DAYS,
 )
+from .rates import BillingCycle, CostRate, KnownRates, cost_identity, known_cost_rate
 
 _LOGGER = logging.getLogger(__name__)
 
 _DATE_FMT = "%m/%d/%Y"
 # Gentle pause between history chunk requests on first-run backfill.
 _CHUNK_DELAY = 1.0
-# How far back to look for billing periods when deriving an effective rate on
-# a normal update; a full-history import looks back to its oldest hour.
+# How far back to look for billing cycles when deriving effective rates on a
+# normal update; a full-history import looks back to its oldest hour.
 _RATE_LOOKBACK_DAYS = 400
-# Billing-period requests span at most this many days each.
+# Billing-cycle requests span at most this many days each.
 _RATE_CHUNK_DAYS = 365
 
-# Records which meters have their full history imported, and with which history
-# limit: {"full_history": {<usage statistic id>: <max history days>}}. The first
-# version stored a list of ids; those were built with the default limit.
+# Records which meters have their full history imported, with which history
+# limit, and which cost rate each cost statistic was priced under:
+# {"full_history": {<usage id>: <max history days>}, "cost_rates": {<cost id>:
+# <cost rate identity>}}. The first version stored a list of usage ids; those
+# were built with the default limit. A cost statistic without an identity was
+# priced under the rule before ADR 0012 and is repriced once.
 _STORE_KEY = f"{DOMAIN}.statistics"
 _STORE_VERSION = 1
+# Recorded in place of an identity while no cost rate is known.
+_NO_RATE = "none"
 
-# A billing period with an effective per-unit rate.
-_RatePeriod = tuple[datetime, datetime, float]
 # A statistic's last imported hour (UTC timestamp) and its running sum.
 _Last = tuple[float, float]
+# Hourly (UTC hour, native value) points.
+_Hours = list[tuple[datetime, float]]
+
+
+@dataclass
+class _Imported:
+    """What the store records about earlier imports."""
+
+    full_history: dict[str, int] = field(default_factory=dict)
+    cost_rates: dict[str, str] = field(default_factory=dict)
 
 
 def statistic_id(account_number: str, meter: Meter, suffix: str = "") -> str:
@@ -101,16 +116,18 @@ async def async_update_statistics(
     account_number: str,
     premise_number: str,
     meters: list[Meter],
-    electricity_rate: float | None = None,
-    gas_rate: float | None = None,
+    rates: Mapping[str, KnownRates],
     max_history_days: int = DEFAULT_MAX_HISTORY_DAYS,
 ) -> None:
-    """Import hourly usage (and cost, when a rate is known) for every meter."""
+    """Import hourly usage (and cost, when a cost rate is known) for every meter.
+
+    ``rates`` holds the static and marginal rate known for each service.
+    """
     tz = await dt_util.async_get_time_zone(hass.config.time_zone) or dt_util.UTC
     for meter in meters:
-        rate = electricity_rate if meter.service_type == SERVICE_ELECTRIC else gas_rate
+        known = rates.get(meter.service_type) or KnownRates()
         await _async_update_meter(
-            hass, api, account_number, premise_number, meter, tz, rate, max_history_days
+            hass, api, account_number, premise_number, meter, tz, known, max_history_days
         )
 
 
@@ -121,44 +138,72 @@ async def _async_update_meter(
     premise_number: str,
     meter: Meter,
     tz: tzinfo,
-    static_rate: float | None,
-    max_days: int = DEFAULT_MAX_HISTORY_DAYS,
+    known: KnownRates,
+    max_days: int,
 ) -> None:
     cons_id = statistic_id(account_number, meter)
     cost_id = statistic_id(account_number, meter, "_cost")
-    today = dt_util.now(tz).date()
-
-    rate_for = await _async_rate_fn(
-        api,
-        account_number,
-        premise_number,
-        meter,
-        tz,
-        static_rate,
-        today - timedelta(days=_RATE_LOOKBACK_DAYS),
-    )
+    imported = await _async_load_imported(hass)
     cons_last = await _async_last(hass, cons_id)
-    cost_last = await _async_last(hass, cost_id) if rate_for is not None else None
 
     # Rebuild from the full history when the meter was never imported in full
-    # (or was imported with a different history limit), its usage statistic is
-    # missing, or a cost rate is newly available.
-    if (
-        (await _async_full_history_limits(hass)).get(cons_id) != max_days
-        or cons_last is None
-        or (rate_for is not None and cost_last is None)
-    ):
+    # (or was imported with a different history limit), or its usage
+    # statistic is missing.
+    if imported.full_history.get(cons_id) != max_days or cons_last is None:
         await _async_import_full_history(
-            hass, api, account_number, premise_number, meter, tz, static_rate, max_days
+            hass, api, account_number, premise_number, meter, tz, known, max_days
         )
         return
 
-    # Otherwise fetch only from the older of the two last imported hours.
-    since = cons_last[0] if cost_last is None else min(cons_last[0], cost_last[0])
+    cost_last = await _async_last(hass, cost_id)
+    priced_with = imported.cost_rates.get(cost_id)
+    reprice = cost_last is None or priced_with != cost_identity(known.static)
+    # Cost is appended from the older of the two last imported hours.
+    since = cons_last[0] if reprice or cost_last is None else min(cons_last[0], cost_last[0])
+    rate = await _async_cost_rate(
+        api, account_number, premise_number, meter, tz, known, _local_date(since, tz)
+    )
+
+    if rate is None:
+        # No cost to add or reprice: import usage only, from the last usage hour.
+        native = await _async_fetch_hourly(
+            api, account_number, premise_number, meter, tz, cons_last[0]
+        )
+        _import_usage(hass, meter, cons_id, native, cons_last)
+        if cost_last is not None and priced_with != _NO_RATE:
+            _LOGGER.warning(
+                "No cost rate for %s; keeping its cost history and adding no new hours", cost_id
+            )
+            imported.cost_rates[cost_id] = _NO_RATE  # reprices once a rate is back
+            await _async_save_imported(hass, imported)
+        return
+
     native = await _async_fetch_hourly(api, account_number, premise_number, meter, tz, since)
+    if not reprice:
+        _import_usage(hass, meter, cons_id, native, cons_last)
+        _import_cost(hass, meter, cost_id, native, rate, cost_last)
+        return
+
+    # Reprice the whole cost statistic: the usage already stored plus the new
+    # hours, without fetching the history again. Read the stored usage before
+    # adding the new hours to it.
+    by_hour = dict(await _async_hours(hass, cons_id))
     _import_usage(hass, meter, cons_id, native, cons_last)
-    if rate_for is not None:
-        _import_cost(hass, meter, cost_id, native, rate_for, cost_last)
+    by_hour.update((hour, value) for hour, value in native if hour.timestamp() > cons_last[0])
+    hours = sorted(by_hour.items())
+    if not hours:
+        return
+    oldest = hours[0][0].astimezone(tz).date()
+    if oldest < _local_date(since, tz):
+        rate = (
+            await _async_cost_rate(api, account_number, premise_number, meter, tz, known, oldest)
+            or rate
+        )
+    _LOGGER.info("Repricing the cost history of %s", cost_id)
+    get_instance(hass).async_clear_statistics([cost_id])
+    _import_cost(hass, meter, cost_id, hours, rate, None)
+    imported.cost_rates[cost_id] = rate.identity
+    await _async_save_imported(hass, imported)
 
 
 async def _async_import_full_history(
@@ -168,7 +213,7 @@ async def _async_import_full_history(
     premise_number: str,
     meter: Meter,
     tz: tzinfo,
-    static_rate: float | None,
+    known: KnownRates,
     max_days: int,
 ) -> None:
     """Replace a meter's statistics with every hour the API has, up to the limit."""
@@ -181,16 +226,18 @@ async def _async_import_full_history(
     if not native:
         return
     oldest = native[0][0].astimezone(tz).date()
-    rate_for = await _async_rate_fn(
-        api, account_number, premise_number, meter, tz, static_rate, oldest
-    )
+    rate = await _async_cost_rate(api, account_number, premise_number, meter, tz, known, oldest)
 
     # The recorder runs these in order: clear first, then the new imports.
     get_instance(hass).async_clear_statistics([cons_id, cost_id])
     _import_usage(hass, meter, cons_id, native, None)
-    if rate_for is not None:
-        _import_cost(hass, meter, cost_id, native, rate_for, None)
-    await _async_mark_full_history(hass, cons_id, max_days)
+    imported = await _async_load_imported(hass)
+    imported.full_history[cons_id] = max_days
+    imported.cost_rates.pop(cost_id, None)
+    if rate is not None:
+        _import_cost(hass, meter, cost_id, native, rate, None)
+        imported.cost_rates[cost_id] = rate.identity
+    await _async_save_imported(hass, imported)
     _LOGGER.info("Imported %d hours for %s, back to %s", len(native), cons_id, oldest.isoformat())
 
 
@@ -198,7 +245,7 @@ def _import_usage(
     hass: HomeAssistant,
     meter: Meter,
     cons_id: str,
-    native: list[tuple[datetime, float]],
+    native: _Hours,
     last: _Last | None,
 ) -> None:
     """Import native hourly usage (electric kWh, gas therms) as stored."""
@@ -223,11 +270,11 @@ def _import_cost(
     hass: HomeAssistant,
     meter: Meter,
     cost_id: str,
-    native: list[tuple[datetime, float]],
-    rate_for: Callable[[datetime], float],
+    native: _Hours,
+    rate: CostRate,
     last: _Last | None,
 ) -> None:
-    """Import hourly cost: native usage x the rate (kWh x $/kWh, therms x $/therm)."""
+    """Import hourly cost: native usage x the cost rate (kWh x $/kWh, therms x $/therm)."""
     _import_series(
         hass,
         StatisticMetaData(
@@ -239,7 +286,7 @@ def _import_cost(
             unit_class=None,
             unit_of_measurement=None,
         ),
-        [(hour, value * rate_for(hour)) for hour, value in native],
+        [(hour, value * rate(hour)) for hour, value in native],
         last,
     )
 
@@ -248,53 +295,63 @@ def _store(hass: HomeAssistant) -> Store[dict[str, Any]]:
     return Store(hass, _STORE_VERSION, _STORE_KEY)
 
 
-async def _async_full_history_limits(hass: HomeAssistant) -> dict[str, int]:
-    """History limit (days) each meter's full history was imported with, by usage id."""
+async def _async_load_imported(hass: HomeAssistant) -> _Imported:
     data = await _store(hass).async_load() or {}
     stored = data.get("full_history") or {}
     if isinstance(stored, list):  # first version: ids only, built with the default
-        return dict.fromkeys(stored, DEFAULT_MAX_HISTORY_DAYS)
-    return {str(key): int(value) for key, value in stored.items()}
+        full_history = dict.fromkeys(stored, DEFAULT_MAX_HISTORY_DAYS)
+    else:
+        full_history = {str(key): int(value) for key, value in stored.items()}
+    cost_rates = {str(key): str(value) for key, value in (data.get("cost_rates") or {}).items()}
+    return _Imported(full_history, cost_rates)
 
 
-async def _async_mark_full_history(hass: HomeAssistant, cons_id: str, max_days: int) -> None:
-    limits = await _async_full_history_limits(hass) | {cons_id: max_days}
-    await _store(hass).async_save({"full_history": dict(sorted(limits.items()))})
+async def _async_save_imported(hass: HomeAssistant, imported: _Imported) -> None:
+    await _store(hass).async_save(
+        {
+            "full_history": dict(sorted(imported.full_history.items())),
+            "cost_rates": dict(sorted(imported.cost_rates.items())),
+        }
+    )
 
 
-async def _async_rate_fn(
+async def _async_cost_rate(
     api: AlliantEnergyApi,
     account_number: str,
     premise_number: str,
     meter: Meter,
     tz: tzinfo,
-    static_rate: float | None,
+    known: KnownRates,
     since: date,
-) -> Callable[[datetime], float] | None:
-    """Return the $/unit rate for an hour, or None when no rate is available.
+) -> CostRate | None:
+    """Return the cost rate for hours from ``since`` on, or None when none is known.
 
-    A static rate (from options or the bill PDF) wins; otherwise each hour uses
-    the effective rate of its billing period (amount / consumption), using
-    billing periods back to ``since``.
+    Billing cycles are read only when an hour from ``since`` on needs an
+    effective rate: never with a static rate, and with a marginal rate only for
+    hours before its billing cycle.
     """
-    if static_rate is not None:
-        return lambda _hour: static_rate
-    periods = await _async_rate_periods(api, account_number, premise_number, meter, tz, since)
-    if not periods:
-        return None
-    return partial(_rate_for, periods)
+    cycles: list[BillingCycle] = []
+    needs_cycles = known.static is None and (
+        known.marginal is None or known.marginal_from is None or since < known.marginal_from
+    )
+    if needs_cycles:
+        lookback = dt_util.now(tz).date() - timedelta(days=_RATE_LOOKBACK_DAYS)
+        cycles = await _async_billing_cycles(
+            api, account_number, premise_number, meter, tz, min(since, lookback)
+        )
+    return known_cost_rate(known, cycles, tz)
 
 
-async def _async_rate_periods(
+async def _async_billing_cycles(
     api: AlliantEnergyApi,
     account_number: str,
     premise_number: str,
     meter: Meter,
     tz: tzinfo,
     since: date,
-) -> list[_RatePeriod]:
-    """Derive an effective $/unit for each billing period since a date."""
-    periods: dict[datetime, _RatePeriod] = {}
+) -> list[BillingCycle]:
+    """Read a meter's billing cycles since a date, a year per request."""
+    cycles: dict[datetime, BillingCycle] = {}  # by start: a cycle can span two requests
     chunk_end = dt_util.now(tz).date()
     first = True
     while chunk_end >= since:
@@ -311,30 +368,41 @@ async def _async_rate_periods(
             chunk_end.strftime(_DATE_FMT),
             periodicity=PERIODICITY_MONTHLY,
         )
-        for reading in readings:
-            if not reading.usage or reading.cost is None:
-                continue
-            start = _parse_hour(reading.reading_from, tz)
-            end = _parse_hour(reading.reading_to, tz)
-            if start is None or end is None or start >= end:
-                continue
-            periods[start] = (start, end, reading.cost / reading.usage)
+        cycles.update((cycle.start, cycle) for cycle in billing_cycles(readings, tz))
         chunk_end = chunk_start - timedelta(days=1)
-    return sorted(periods.values())
+    return sorted(cycles.values(), key=lambda cycle: cycle.start)
 
 
-def _rate_for(periods: list[_RatePeriod], hour: datetime) -> float:
-    """Pick the rate for the billing period containing ``hour``.
+def billing_cycles(readings: list[UsageReading], tz: tzinfo) -> list[BillingCycle]:
+    """Billing cycles from billing-cycle usage readings, skipping unusable ones."""
+    cycles: dict[datetime, BillingCycle] = {}
+    for reading in readings:
+        start = _parse_hour(reading.reading_from, tz)
+        end = _parse_hour(reading.reading_to, tz)
+        if start is None or end is None or start >= end or reading.usage is None:
+            continue
+        cycles[start] = BillingCycle(start, end, reading.usage, reading.cost)
+    return sorted(cycles.values(), key=lambda cycle: cycle.start)
 
-    Hours before the first period use the earliest rate; hours after the last
-    (e.g. the current, unbilled period) use the most recent rate.
-    """
-    for start, end, rate in periods:
-        if start <= hour < end:
-            return rate
-    if hour < periods[0][0]:
-        return periods[0][2]
-    return periods[-1][2]
+
+def _local_date(timestamp: float, tz: tzinfo) -> date:
+    return datetime.fromtimestamp(timestamp, tz).date()
+
+
+async def _async_hours(hass: HomeAssistant, stat_id: str) -> _Hours:
+    """Every stored (UTC hour, value) of a statistic, oldest first."""
+
+    def _get() -> list[Any]:
+        return statistics_during_period(
+            hass, datetime(2000, 1, 1, tzinfo=UTC), None, {stat_id}, "hour", None, {"state"}
+        ).get(stat_id, [])
+
+    rows = await get_instance(hass).async_add_executor_job(_get)
+    return [
+        (datetime.fromtimestamp(row["start"], UTC), row["state"])
+        for row in rows
+        if row.get("state") is not None
+    ]
 
 
 async def _async_last(hass: HomeAssistant, stat_id: str) -> _Last | None:
@@ -351,7 +419,7 @@ async def _async_last(hass: HomeAssistant, stat_id: str) -> _Last | None:
 def _import_series(
     hass: HomeAssistant,
     metadata: StatisticMetaData,
-    points: list[tuple[datetime, float]],
+    points: _Hours,
     last: _Last | None,
 ) -> None:
     """Append (hour, value) points after ``last``, continuing its running sum."""
