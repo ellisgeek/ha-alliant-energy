@@ -18,9 +18,12 @@ portal's own JavaScript sends, so it can change without notice.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
+import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -34,6 +37,9 @@ _LOGGER = logging.getLogger(__name__)
 
 # TLS fingerprint to impersonate. A recent stable Chrome is a safe default.
 IMPERSONATE = "chrome"
+
+# Pause between consecutive requests, to keep the load on the account gentle.
+REQUEST_PAUSE_SECONDS = 0.5
 
 # Backend service roots. The portal splits its API across several hosts/paths;
 # these are the only ones needed for authentication, discovery, and usage.
@@ -155,11 +161,26 @@ class AlliantEnergyApi:
 
     Owns a ``curl_cffi`` session unless one is injected (used by tests). Call
     :meth:`close` when finished if the session is owned.
+
+    Requests are paced: one at a time, each ``pause`` seconds (default
+    ``REQUEST_PAUSE_SECONDS``) after the previous one ended, even when callers
+    overlap.
     """
 
-    def __init__(self, session: Any | None = None) -> None:
+    def __init__(
+        self,
+        session: Any | None = None,
+        pause: float | None = None,
+        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
         self._session = session or AsyncSession(impersonate=IMPERSONATE)
         self._owns_session = session is None
+        self._pause = REQUEST_PAUSE_SECONDS if pause is None else pause
+        self._sleep = sleep
+        self._clock = clock
+        self._send_lock = asyncio.Lock()
+        self._last_sent: float | None = None
         self._access_token: str | None = None
         self._refresh_token: str | None = None
         self._user_uuid: str | None = None
@@ -359,7 +380,7 @@ class AlliantEnergyApi:
         if not url:
             return None
         try:
-            resp = await self._session.request("GET", url)
+            resp = await self._send("GET", url)
         except RequestException as err:
             raise AlliantEnergyError(f"Bill PDF download failed: {err}") from err
         if resp.status_code >= 400:
@@ -404,6 +425,18 @@ class AlliantEnergyApi:
         records = result.get(_USAGE_RESULT_KEY[service_type]) or []
         return [_parse_reading(record, uom) for record in records]
 
+    async def _send(self, method: HttpMethod, url: str, **kwargs: Any) -> Any:
+        """Send one request on the session, paced after the previous one."""
+        async with self._send_lock:
+            if self._last_sent is not None:
+                wait = self._pause - (self._clock() - self._last_sent)
+                if wait > 0:
+                    await self._sleep(wait)
+            try:
+                return await self._session.request(method, url, **kwargs)
+            finally:
+                self._last_sent = self._clock()
+
     async def _request(
         self,
         method: HttpMethod,
@@ -441,9 +474,7 @@ class AlliantEnergyApi:
         # Serialize the body ourselves so it byte-for-byte matches the signature.
         payload = json.dumps(body, separators=(",", ":")) if body is not None else None
         try:
-            resp = await self._session.request(
-                method, url, data=payload, params=params, headers=headers
-            )
+            resp = await self._send(method, url, data=payload, params=params, headers=headers)
         except RequestException as err:
             raise AlliantEnergyError(f"{method} {url} failed: {err}") from err
 

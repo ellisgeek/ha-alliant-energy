@@ -26,8 +26,8 @@ def auto_recorder(recorder_mock: Recorder) -> None:
 
 @pytest.fixture(autouse=True)
 def no_request_pause():
-    """Send usage requests back to back; pacing has its own test."""
-    with patch("custom_components.alliant_energy.usage.REQUEST_PAUSE_SECONDS", 0):
+    """Send requests back to back; pacing has its own tests."""
+    with patch("custom_components.alliant_energy.api.REQUEST_PAUSE_SECONDS", 0):
         yield
 
 

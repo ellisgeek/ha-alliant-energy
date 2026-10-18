@@ -1,6 +1,5 @@
 """Tests for reading usage through the Alliant backend adapter."""
 
-import asyncio
 from datetime import UTC, date, datetime
 from typing import cast
 from zoneinfo import ZoneInfo
@@ -25,30 +24,14 @@ METER = Meter("E1", "P1", SERVICE_ELECTRIC, {})
 
 
 class FakeApi:
-    """Answers usage requests from canned readings and records each request.
+    """Answers usage requests from canned readings and records each request."""
 
-    With a ``time``, each request takes ``latency`` seconds on that clock and
-    yields while in flight, like a real network request.
-    """
-
-    def __init__(
-        self,
-        readings: list[UsageReading] | None = None,
-        time: FakeTime | None = None,
-        latency: float = 0.0,
-    ) -> None:
+    def __init__(self, readings: list[UsageReading] | None = None) -> None:
         self.readings = readings or []
         self.requests: list[dict] = []
-        self.sent_at: list[float] = []
-        self._time = time
-        self._latency = latency
 
     async def async_get_usage(self, **request) -> list[UsageReading]:
         self.requests.append(request)
-        if self._time is not None:
-            self.sent_at.append(self._time.now)
-            await asyncio.sleep(0)  # in flight: let other reads run
-            self._time.now += self._latency
         return self.readings
 
 
@@ -64,7 +47,7 @@ def _reading(reading_date, usage):
 
 
 def _usage(api: FakeApi) -> AlliantUsage:
-    return AlliantUsage(cast(AlliantEnergyApi, api), "acct", "P1", CHICAGO, pause=0)
+    return AlliantUsage(cast(AlliantEnergyApi, api), "acct", "P1", CHICAGO)
 
 
 async def test_hourly_returns_local_wall_clock_hours_in_utc() -> None:
@@ -113,37 +96,6 @@ async def test_hourly_splits_long_ranges_into_30_day_requests() -> None:
         ("08/31/2026", "09/29/2026"),
         ("09/30/2026", "10/07/2026"),
     ]
-
-
-class FakeTime:
-    """A clock that only moves when something sleeps on it."""
-
-    def __init__(self) -> None:
-        self.now = 1000.0
-        self.sleeps: list[float] = []
-
-    def clock(self) -> float:
-        return self.now
-
-    async def sleep(self, seconds: float) -> None:
-        self.sleeps.append(seconds)
-        self.now += seconds
-
-
-async def test_requests_are_paced_across_reads() -> None:
-    """Back-to-back requests wait out the pause, even across separate reads."""
-    time = FakeTime()
-    api = FakeApi()
-    usage = AlliantUsage(
-        cast(AlliantEnergyApi, api), "acct", "P1", CHICAGO, 0.5, time.sleep, time.clock
-    )
-
-    await usage.hourly(METER, date(2026, 8, 1), date(2026, 9, 15))  # two requests
-    time.now += 0.2  # the caller takes 0.2 s before reading again
-    await usage.hourly(METER, date(2026, 10, 1), date(2026, 10, 2))
-
-    assert len(api.requests) == 3
-    assert time.sleeps == pytest.approx([0.5, 0.3])
 
 
 async def test_daily_returns_local_dates() -> None:
@@ -198,36 +150,6 @@ async def test_billing_cycles_from_yearly_requests_without_duplicates() -> None:
         ("10/01/2025", "09/30/2026"),
         ("10/01/2026", "10/18/2026"),
     ]
-
-
-def _paced(api: FakeApi, time: FakeTime) -> AlliantUsage:
-    return AlliantUsage(
-        cast(AlliantEnergyApi, api), "acct", "P1", CHICAGO, 0.5, time.sleep, time.clock
-    )
-
-
-async def test_pause_runs_from_the_end_of_the_previous_request() -> None:
-    """A slow request still leaves the full pause before the next one."""
-    time = FakeTime()
-    api = FakeApi(time=time, latency=0.8)
-
-    await _paced(api, time).hourly(METER, date(2026, 8, 1), date(2026, 9, 15))  # two requests
-
-    assert api.sent_at[1] - api.sent_at[0] == pytest.approx(0.8 + 0.5)
-
-
-async def test_concurrent_reads_never_send_requests_together() -> None:
-    """The sensor refresh and the statistics import share one paced reader."""
-    time = FakeTime()
-    api = FakeApi(time=time, latency=0.8)
-    usage = _paced(api, time)
-
-    await asyncio.gather(
-        usage.hourly(METER, date(2026, 10, 1), date(2026, 10, 2)),
-        usage.daily(METER, date(2026, 10, 1), date(2026, 10, 2)),
-    )
-
-    assert api.sent_at[1] - api.sent_at[0] == pytest.approx(0.8 + 0.5)
 
 
 async def test_hour_returned_by_two_requests_is_counted_once() -> None:

@@ -7,9 +7,6 @@ backend's date strings, periodicity codes, and timestamp quirks stay here.
 
 from __future__ import annotations
 
-import asyncio
-import time
-from collections.abc import Awaitable, Callable
 from datetime import date, datetime, timedelta, tzinfo
 from typing import Protocol
 
@@ -23,7 +20,7 @@ from .api import (
     Meter,
     UsageReading,
 )
-from .const import REQUEST_PAUSE_SECONDS, STATISTICS_CHUNK_DAYS
+from .const import STATISTICS_CHUNK_DAYS
 from .rates import BillingCycle
 
 _DATE_FMT = "%m/%d/%Y"
@@ -53,9 +50,8 @@ class MeterUsage(Protocol):
 class AlliantUsage:
     """Usage readings from the Alliant backend for one account and premise.
 
-    Requests are paced: one at a time, each ``pause`` seconds after the
-    previous one ended, across every read (ADR 0007). Timestamps are parsed in
-    ``tz``, or in Home Assistant's time zone at the time of each read.
+    Timestamps are parsed in ``tz``, or in Home Assistant's time zone at the
+    time of each read. The API client paces the requests (ADR 0007).
     """
 
     def __init__(
@@ -64,19 +60,11 @@ class AlliantUsage:
         account_number: str,
         premise_number: str,
         tz: tzinfo | None = None,
-        pause: float | None = None,
-        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
-        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._api = api
         self._account = account_number
         self._premise = premise_number
         self._tz = tz
-        self._pause = REQUEST_PAUSE_SECONDS if pause is None else pause
-        self._sleep = sleep
-        self._clock = clock
-        self._last_request: float | None = None
-        self._lock = asyncio.Lock()
 
     @property
     def _zone(self) -> tzinfo:
@@ -127,27 +115,17 @@ class AlliantUsage:
         chunk_start = start
         while chunk_start <= end:
             chunk_end = min(chunk_start + timedelta(days=chunk_days - 1), end)
-            # One request at a time, each at least ``pause`` after the previous
-            # one ended, even when reads overlap.
-            async with self._lock:
-                if self._last_request is not None:
-                    wait = self._pause - (self._clock() - self._last_request)
-                    if wait > 0:
-                        await self._sleep(wait)
-                try:
-                    readings.extend(
-                        await self._api.async_get_usage(
-                            service_type=meter.service_type,
-                            account_number=self._account,
-                            premise_number=self._premise,
-                            meter_number=meter.meter_number,
-                            from_date=chunk_start.strftime(_DATE_FMT),
-                            to_date=chunk_end.strftime(_DATE_FMT),
-                            periodicity=periodicity,
-                        )
-                    )
-                finally:
-                    self._last_request = self._clock()
+            readings.extend(
+                await self._api.async_get_usage(
+                    service_type=meter.service_type,
+                    account_number=self._account,
+                    premise_number=self._premise,
+                    meter_number=meter.meter_number,
+                    from_date=chunk_start.strftime(_DATE_FMT),
+                    to_date=chunk_end.strftime(_DATE_FMT),
+                    periodicity=periodicity,
+                )
+            )
             chunk_start = chunk_end + timedelta(days=1)
         return readings
 

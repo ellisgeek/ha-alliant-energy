@@ -5,6 +5,7 @@ exercise signing, header construction, and response parsing without any
 network.
 """
 
+import asyncio
 import hashlib
 import json
 from typing import Any
@@ -24,6 +25,7 @@ class _FakeResponse:
     def __init__(self, status: int, payload) -> None:
         self.status_code = status
         self.text = json.dumps(payload)
+        self.content = self.text.encode()
 
 
 class _FakeSession:
@@ -258,3 +260,63 @@ async def test_refresh_on_401() -> None:
 
     assert meters == []
     assert session.calls[-1]["headers"]["Authorization"] == "Bearer new-token"
+
+
+class _FakeTime:
+    """A clock that only moves when something sleeps on it or a request runs."""
+
+    def __init__(self) -> None:
+        self.now = 1000.0
+        self.sleeps: list[float] = []
+
+    def clock(self) -> float:
+        return self.now
+
+    async def sleep(self, seconds: float) -> None:
+        self.sleeps.append(seconds)
+        self.now += seconds
+
+
+class _SlowSession(_FakeSession):
+    """Each request takes ``latency`` seconds and yields while in flight."""
+
+    def __init__(self, responses, time: _FakeTime, latency: float) -> None:
+        super().__init__(responses)
+        self.sent_at: list[float] = []
+        self._time = time
+        self._latency = latency
+
+    async def request(self, method, url, **kwargs):
+        self.sent_at.append(self._time.now)
+        await asyncio.sleep(0)  # in flight: let other requests run
+        self._time.now += self._latency
+        return await super().request(method, url, **kwargs)
+
+
+def _paced_api(*responses: _FakeResponse) -> tuple[AlliantEnergyApi, _SlowSession]:
+    time = _FakeTime()
+    session = _SlowSession(list(responses), time, latency=0.8)
+    api = AlliantEnergyApi(session=session, pause=0.5, sleep=time.sleep, clock=time.clock)
+    api._access_token = "token"
+    return api, session
+
+
+async def test_every_request_waits_a_pause_after_the_previous_one_ended() -> None:
+    """The bill PDF lookup and its download, on another host, are paced alike."""
+    api, session = _paced_api(
+        _FakeResponse(200, {"data": {"billPdf": "https://ebill.example/bill.pdf"}}),
+        _FakeResponse(200, "%PDF"),
+    )
+
+    await api.async_get_bill_pdf("acct", "INV1")
+
+    assert session.sent_at[1] - session.sent_at[0] == pytest.approx(0.8 + 0.5)
+
+
+async def test_concurrent_requests_are_sent_one_at_a_time() -> None:
+    """The sensor refresh and the statistics import share one client."""
+    api, session = _paced_api(_FakeResponse(200, {"data": {}}), _FakeResponse(200, {"data": {}}))
+
+    await asyncio.gather(api.async_get_current_bill("acct"), api.async_get_current_bill("acct"))
+
+    assert session.sent_at[1] - session.sent_at[0] == pytest.approx(0.8 + 0.5)

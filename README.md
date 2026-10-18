@@ -267,8 +267,8 @@ Chrome TLS impersonation.
 
 | Module | Role |
 | --- | --- |
-| `api.py` | Low-level client: login, token refresh, request signing, discovery, usage, bills, bill PDF. No Home Assistant imports. |
-| `usage.py` | Reads a meter's hourly and daily usage and its billing cycles by date range. Hides the backend's request format and paces requests. |
+| `api.py` | Low-level client: login, token refresh, request signing, request pacing, discovery, usage, bills, bill PDF. No Home Assistant imports. |
+| `usage.py` | Reads a meter's hourly and daily usage and its billing cycles by date range. Hides the backend's request format. |
 | `billparser.py` | Reads marginal rates from the bill PDF (`pdfplumber`). |
 | `rates.py` | Chooses the cost rate for each hour: static, marginal, or effective. |
 | `statistics.py` | Imports hourly usage and cost as long-term statistics for the Energy dashboard. |
