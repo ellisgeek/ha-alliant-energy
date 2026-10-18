@@ -1013,3 +1013,44 @@ async def test_tfa_without_delivery_details_is_not_required() -> None:
 
     assert api.tfa_required is False
     assert session.calls[1]["headers"]["pt"] == "1"  # the default persona
+
+
+async def test_accounts_skip_rows_without_an_account_or_premise() -> None:
+    rows = [
+        {"accountNumber": "A0", "premiseNumber": ""},
+        {"accountNumber": "", "premiseNumber": "P0"},
+        {"accountNumber": "A1", "premiseNumber": "P1"},
+    ]
+    api, _ = _api(_FakeResponse(200, {**_OK, "data": rows}))
+    api._access_token = "token"  # noqa: SLF001
+    api._user_uuid = "u-1"  # noqa: SLF001
+
+    assert await api.async_get_accounts() == [Account("A1", "P1", rows[2])]
+
+
+async def test_meter_premise_comes_from_the_meter() -> None:
+    raw = {"meterNumber": "E1", "premiseNumber": "P2", "meterType": 1}
+    api, _ = _api(_FakeResponse(200, {**_OK, "data": [raw]}))
+    api._access_token = "token"  # noqa: SLF001
+
+    meters = await api.async_get_meters("A1", "P1")
+
+    assert [meter.premise_number for meter in meters] == ["P2"]
+
+
+async def test_a_401_on_usage_resends_its_query_and_persona() -> None:
+    api, session = _api(
+        _FakeResponse(401, {}),
+        _FakeResponse(200, {**_OK, "data": {"accessToken": "new"}}),
+        _FakeResponse(200, {"StatusCode": 200, "Result": {}}),
+    )
+    api._access_token = "token"  # noqa: SLF001
+    api._refresh_token = "refresh"  # noqa: SLF001
+
+    await api.async_get_usage(SERVICE_GAS, "A1", "P1", "G1", "09/01/2026", "10/15/2026")
+
+    first, _refresh, retried = session.calls
+    assert retried == {
+        **first,
+        "headers": {**first["headers"], "Authorization": "Bearer new"},
+    }
