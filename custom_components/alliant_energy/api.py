@@ -162,9 +162,9 @@ class AlliantEnergyApi:
     Owns a ``curl_cffi`` session unless one is injected (used by tests). Call
     :meth:`close` when finished if the session is owned.
 
-    Requests are paced: one at a time, each ``pause`` seconds (default
-    ``REQUEST_PAUSE_SECONDS``) after the previous one ended, even when callers
-    overlap.
+    Requests are paced per client: one at a time, each ``pause`` seconds
+    (default ``REQUEST_PAUSE_SECONDS``) after the previous one ended, even when
+    callers sharing this client overlap.
     """
 
     def __init__(

@@ -11,12 +11,14 @@ import json
 from typing import Any
 
 import pytest
+from curl_cffi.requests.exceptions import RequestException
 
 from custom_components.alliant_energy.api import (
     SERVICE_ELECTRIC,
     SERVICE_GAS,
     AlliantEnergyApi,
     AlliantEnergyAuthError,
+    AlliantEnergyError,
     _sign,
 )
 
@@ -290,20 +292,25 @@ class _SlowSession(_FakeSession):
         self.sent_at.append(self._time.now)
         await asyncio.sleep(0)  # in flight: let other requests run
         self._time.now += self._latency
+        if isinstance(failure := self._responses[0], Exception):
+            self._responses.pop(0)
+            raise failure
         return await super().request(method, url, **kwargs)
 
 
-def _paced_api(*responses: _FakeResponse) -> tuple[AlliantEnergyApi, _SlowSession]:
+def _paced_api(
+    *responses: _FakeResponse | Exception, latency: float = 0.8
+) -> tuple[AlliantEnergyApi, _SlowSession, _FakeTime]:
     time = _FakeTime()
-    session = _SlowSession(list(responses), time, latency=0.8)
+    session = _SlowSession(list(responses), time, latency)
     api = AlliantEnergyApi(session=session, pause=0.5, sleep=time.sleep, clock=time.clock)
     api._access_token = "token"
-    return api, session
+    return api, session, time
 
 
 async def test_every_request_waits_a_pause_after_the_previous_one_ended() -> None:
     """The bill PDF lookup and its download, on another host, are paced alike."""
-    api, session = _paced_api(
+    api, session, _time = _paced_api(
         _FakeResponse(200, {"data": {"billPdf": "https://ebill.example/bill.pdf"}}),
         _FakeResponse(200, "%PDF"),
     )
@@ -315,8 +322,35 @@ async def test_every_request_waits_a_pause_after_the_previous_one_ended() -> Non
 
 async def test_concurrent_requests_are_sent_one_at_a_time() -> None:
     """The sensor refresh and the statistics import share one client."""
-    api, session = _paced_api(_FakeResponse(200, {"data": {}}), _FakeResponse(200, {"data": {}}))
+    api, session, _time = _paced_api(
+        _FakeResponse(200, {"data": {}}), _FakeResponse(200, {"data": {}})
+    )
 
     await asyncio.gather(api.async_get_current_bill("acct"), api.async_get_current_bill("acct"))
 
     assert session.sent_at[1] - session.sent_at[0] == pytest.approx(0.8 + 0.5)
+
+
+async def test_pause_is_shortened_by_time_already_passed() -> None:
+    """The first request goes at once; the next waits only what is left of the pause."""
+    api, _session, time = _paced_api(
+        _FakeResponse(200, {"data": {}}), _FakeResponse(200, {"data": {}}), latency=0
+    )
+
+    await api.async_get_current_bill("acct")
+    time.now += 0.2  # the caller was busy for 0.2 s
+    await api.async_get_current_bill("acct")
+
+    assert time.sleeps == pytest.approx([0.3])
+
+
+async def test_failed_request_still_counts_toward_the_pause() -> None:
+    api, _session, time = _paced_api(
+        RequestException("connection reset"), _FakeResponse(200, {"data": {}}), latency=0
+    )
+
+    with pytest.raises(AlliantEnergyError):
+        await api.async_get_current_bill("acct")
+    await api.async_get_current_bill("acct")
+
+    assert time.sleeps == pytest.approx([0.5])
