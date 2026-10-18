@@ -13,8 +13,8 @@ class FakeUsage:
     """Answers reads from canned usage and records each read.
 
     Readings are shared by every meter. ``fail_before`` makes hourly reads that
-    start before that date raise, like a backend that errors for dates before
-    the history begins.
+    start before that date raise ``failure``, like a backend that errors for
+    dates before the history begins.
     """
 
     def __init__(
@@ -24,12 +24,14 @@ class FakeUsage:
         daily: list[tuple[date, float]] | None = None,
         cycles: list[BillingCycle] | None = None,
         fail_before: date | None = None,
+        failure: Exception | None = None,
     ) -> None:
         self._tz = tz
         self._hourly = hourly or []
         self._daily = daily or []
         self._cycles = cycles or []
         self._fail_before = fail_before
+        self._failure = failure or AlliantEnergyError("HTTP 500")
         # (read, meter number, start, end) of every read, in order.
         self.reads: list[tuple[str, str, date, date]] = []
 
@@ -37,7 +39,7 @@ class FakeUsage:
         self.reads.append(("hourly", meter.meter_number, start, end))
         await asyncio.sleep(0)  # like a request in flight: other tasks run
         if self._fail_before is not None and start < self._fail_before:
-            raise AlliantEnergyError("HTTP 500")
+            raise self._failure
         return [
             (hour, value)
             for hour, value in self._hourly

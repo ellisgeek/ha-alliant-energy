@@ -3,6 +3,7 @@
 import asyncio
 from datetime import UTC, date, datetime, timedelta
 from functools import partial
+from unittest.mock import AsyncMock, patch
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -25,6 +26,7 @@ from custom_components.alliant_energy import statistics as stats
 from custom_components.alliant_energy.api import (
     SERVICE_ELECTRIC,
     SERVICE_GAS,
+    AlliantEnergyAuthError,
     AlliantEnergyError,
     Meter,
 )
@@ -522,3 +524,75 @@ async def test_two_accounts_importing_at_once_both_keep_their_records(hass, hass
         stats.statistic_id("accta", meter),
         stats.statistic_id("acctb", meter),
     }
+
+
+async def test_meter_without_any_history_imports_nothing_and_tries_again(hass) -> None:
+    meter = Meter("E1", "P1", SERVICE_ELECTRIC, {})
+    await _run_meter(hass, _usage(), meter, rate=0.2)
+    assert await _rows(hass, stats.statistic_id("acct", meter)) == []
+
+    later = _usage(hourly=_hours("2026-10-07", [1.0]))
+    await _run_meter(hass, later, meter, rate=0.2)
+
+    assert len(_hh_requests(later)) == 3  # the full walk again, not an update
+    assert await _rows(hass, stats.statistic_id("acct", meter)) == pytest.approx([(1.0, 1.0)])
+
+
+async def test_auth_error_ends_the_history_walk_even_after_data(hass) -> None:
+    """Only a data error marks the start of the history; auth must reach the caller."""
+    meter = Meter("E1", "P1", SERVICE_ELECTRIC, {})
+    usage = FakeUsage(
+        CHICAGO,
+        hourly=_hours("2026-10-07", [1.0]),
+        fail_before=date(2026, 9, 1),
+        failure=AlliantEnergyAuthError("expired"),
+    )
+    with pytest.raises(AlliantEnergyAuthError):
+        await _run_meter(hass, usage, meter)
+
+    assert await _rows(hass, stats.statistic_id("acct", meter)) == []
+
+
+async def test_update_requests_nothing_when_the_last_hour_is_newer_than_the_lag(
+    hass, freezer
+) -> None:
+    """With the clock set back a day, no day is due yet."""
+    meter = Meter("E1", "P1", SERVICE_ELECTRIC, {})
+    hours = _hours("2026-10-17", [1.0])
+    await _run_meter(hass, _usage(hourly=hours), meter, rate=0.2)
+
+    freezer.move_to("2026-10-17T12:00:00-05:00")
+    later = _usage(hourly=hours)
+    await _run_meter(hass, later, meter, rate=0.2)
+
+    assert _hh_requests(later) == []
+    assert await _rows(hass, stats.statistic_id("acct", meter)) == pytest.approx([(1.0, 1.0)])
+
+
+async def test_reprice_rates_every_stored_hour_back_to_the_oldest(hass) -> None:
+    """A rate change reprices hours from earlier days too, read back to the oldest."""
+    meter = Meter("E1", "P1", SERVICE_ELECTRIC, {})
+    cycle = [_monthly(100.0, 25.0, "2026-10-01T00:00:00", "2026-11-01T00:00:00")]
+    hours = [*_hours("2026-10-05", [1.0]), *_hours("2026-10-07", [2.0])]
+    await _run_meter(hass, _usage(hourly=hours, monthly=cycle), meter, rate=0.10)
+
+    # The static rate is cleared: the effective rate of the cycle takes over.
+    later = _usage(hourly=hours, monthly=cycle)
+    await _run_meter(hass, later, meter)
+
+    cost = await _rows(hass, stats.statistic_id("acct", meter, "_cost"))
+    assert [state for state, _ in cost] == pytest.approx([0.25, 0.5])
+    assert len(later.ranges("billing_cycles")) == 2  # for the last hour, then the oldest
+
+
+async def test_reprice_with_no_stored_or_new_hours_changes_nothing(hass) -> None:
+    """The usage statistic was cleared while the update ran."""
+    meter = Meter("E1", "P1", SERVICE_ELECTRIC, {})
+    hours = _hours("2026-10-07", [1.0])
+    await _run_meter(hass, _usage(hourly=hours), meter, rate=0.10)
+
+    with patch.object(stats, "_async_hours", AsyncMock(return_value=[])):
+        await _run_meter(hass, _usage(hourly=hours), meter, rate=0.20)
+
+    cost = await _rows(hass, stats.statistic_id("acct", meter, "_cost"))
+    assert cost == pytest.approx([(0.1, 0.1)])

@@ -172,3 +172,23 @@ async def test_error_in_a_later_request_fails_the_whole_read() -> None:
 
     with pytest.raises(AlliantEnergyError):
         await _usage(FailsSecond()).hourly(METER, date(2026, 8, 1), date(2026, 9, 15))
+
+
+async def test_readings_without_a_usable_date_are_skipped() -> None:
+    """The API's "0001-…" placeholder and malformed dates carry no reading."""
+    api = FakeApi(
+        [
+            _reading("2026-10-07T00:00:00", 1.0),
+            _reading("0001-01-01T00:00:00", 2.0),
+            _reading("not a date", 3.0),
+            _reading("2026-13-01T00:00:00", 4.0),
+            _reading(None, 5.0),
+        ]
+    )
+    usage = _usage(api)
+
+    hours = await usage.hourly(METER, date(2026, 10, 7), date(2026, 10, 7))
+    days = await usage.daily(METER, date(2026, 10, 7), date(2026, 10, 7))
+
+    assert [value for _hour, value in hours] == [1.0]
+    assert days == [(date(2026, 10, 7), 1.0)]

@@ -10,6 +10,7 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 from custom_components.alliant_energy.api import (
     Account,
     AlliantEnergyAuthError,
+    AlliantEnergyError,
 )
 from custom_components.alliant_energy.const import DOMAIN
 
@@ -249,3 +250,108 @@ async def test_reauth_rejects_other_account(hass, enable_custom_integrations) ->
 
     assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "account_mismatch"
+
+
+async def _submit(hass, api, user_input=USER_INPUT, flow_id=None):
+    if flow_id is None:
+        result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": SOURCE_USER})
+        flow_id = result["flow_id"]
+    with _patch(api):
+        return await hass.config_entries.flow.async_configure(flow_id, user_input=user_input)
+
+
+@pytest.mark.parametrize(
+    ("error", "reason"),
+    [(AlliantEnergyError("down"), "cannot_connect"), (RuntimeError("bug"), "unknown")],
+)
+async def test_login_errors_show_on_the_form(
+    hass, enable_custom_integrations, error, reason
+) -> None:
+    api = _mock_api(login=error)
+
+    result = await _submit(hass, api)
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"] == {"base": reason}
+    api.close.assert_awaited_once()
+
+
+async def test_login_without_accounts_aborts(hass, enable_custom_integrations) -> None:
+    api = _mock_api(accounts=[])
+
+    result = await _submit(hass, api)
+
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "no_accounts"
+    api.close.assert_awaited_once()
+
+
+def _tfa_api(**kwargs):
+    """Data access is refused until a code is verified."""
+
+    async def accounts():
+        raise AlliantEnergyAuthError("tfa required")
+
+    return _mock_api(accounts=accounts, tfa_required=True, **kwargs)
+
+
+async def test_tfa_code_that_cannot_be_sent_aborts(hass, enable_custom_integrations) -> None:
+    api = _tfa_api(send=AlliantEnergyError("down"))
+
+    result = await _submit(hass, api)
+
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "cannot_connect"
+    api.close.assert_awaited_once()
+
+
+async def test_wrong_tfa_code_asks_again(hass, enable_custom_integrations) -> None:
+    api = _tfa_api(verify=AlliantEnergyAuthError("wrong code"))
+    result = await _submit(hass, api)
+
+    result = await _submit(hass, api, {"code": "000000"}, result["flow_id"])
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "tfa"
+    assert result["errors"] == {"base": "invalid_tfa"}
+
+
+async def test_tfa_verify_failure_aborts(hass, enable_custom_integrations) -> None:
+    api = _tfa_api(verify=AlliantEnergyError("down"))
+    result = await _submit(hass, api)
+
+    result = await _submit(hass, api, {"code": "123456"}, result["flow_id"])
+
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "cannot_connect"
+
+
+async def test_abandoned_flow_closes_the_session(hass, enable_custom_integrations) -> None:
+    """Leaving at the account picker must not leak the HTTP session."""
+    api = _mock_api(accounts=[Account("A1", "P1", {}), Account("A2", "P2", {})])
+    result = await _submit(hass, api)
+    assert result["step_id"] == "account"
+    api.close.assert_not_awaited()
+
+    hass.config_entries.flow.async_abort(result["flow_id"])
+    await hass.async_block_till_done()
+
+    api.close.assert_awaited_once()
+
+
+async def test_reauth_with_a_wrong_password_asks_again(hass, enable_custom_integrations) -> None:
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        unique_id="A1",
+        data={**USER_INPUT, "account_id": "A1", "premise_id": "P1"},
+    )
+    entry.add_to_hass(hass)
+    result = await entry.start_reauth_flow(hass)
+
+    result = await _submit(
+        hass, _mock_api(login=AlliantEnergyAuthError("bad")), USER_INPUT, result["flow_id"]
+    )
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "reauth_confirm"
+    assert result["errors"] == {"base": "invalid_auth"}
