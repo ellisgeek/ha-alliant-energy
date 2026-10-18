@@ -193,10 +193,7 @@ async def _async_update_meter(
     _import_usage(hass, meter, cons_id, native, cons_last)
     by_hour.update((hour, value) for hour, value in native if hour.timestamp() > cons_last[0])
     hours = sorted(by_hour.items())
-    if not hours:
-        return
-    oldest = hours[0][0].astimezone(tz).date()
-    if oldest < _local_date(since, tz):
+    if hours and (oldest := hours[0][0].astimezone(tz).date()) < _local_date(since, tz):
         rate = await _async_cost_rate(usage, meter, tz, known, oldest, past) or rate
     _LOGGER.info("Repricing the cost history of %s", cost_id)
     get_instance(hass).async_clear_statistics([cost_id])
