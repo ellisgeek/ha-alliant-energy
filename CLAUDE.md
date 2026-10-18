@@ -12,6 +12,8 @@ current Home Assistant only (Python 3.14; ADR 0008).
 
 Commits: Conventional Commits, Angular types only (`build`, `ci`, `docs`,
 `feat`, `fix`, `perf`, `refactor`, `test`); enforced by a prek `commit-msg` hook.
+Real changes go on a branch and a pull request. Read `CONTRIBUTING.md` before
+live-account testing (credentials in `.env.secret`; never `source` it).
 
 Releases: CalVer `YYYY.M.MICRO` like Home Assistant (e.g. `2026.10.0`, no `v`
 prefix; ADR 0009). `scripts/release.sh` (bumpver + git-cliff) bumps, writes
