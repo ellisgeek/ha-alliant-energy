@@ -6,7 +6,7 @@ https://myaccount.alliantenergy.com/ is a Smart Energy Water (SEW)
 ``alliant-svc.smartcmobile.com``. This module reproduces the subset of that
 backend the portal uses to read electric and gas usage. The values that belong
 to one utility's deployment (host, utility id, codes) come from a
-:class:`.utility.Utility` (ADR 0014).
+:class:`.utility.Utility` (ADR 0015).
 
 The backend sits behind Cloudflare bot management that blocks ordinary HTTP
 clients (``aiohttp``, ``requests``, plain ``curl``) by TLS fingerprint, before

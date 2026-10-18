@@ -3,7 +3,7 @@
 The PDF is downloaded and parsed only when a new invoice appears, about once a
 month. The parsed result is saved per config entry, so restarts and reloads
 reuse it. Reading the PDF is best-effort (ADR 0005): when it fails, or the
-utility has no parser for its bill layout (ADR 0014), the bill still has its
+utility has no parser for its bill layout (ADR 0015), the bill still has its
 summary.
 """
 

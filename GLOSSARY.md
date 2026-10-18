@@ -28,6 +28,12 @@ one electric meter and, optionally, one gas meter.
 The kind of energy a meter measures: electric or gas.
 _Avoid_: Fuel, commodity, utility type
 
+**Utility**:
+The company whose deployment of the customer-portal backend the integration
+reads: its host, utility id, persona type, meter types, and unit codes. Alliant
+Energy is the only one.
+_Avoid_: Utility type (for a service), provider, tenant
+
 ## Usage
 
 **Usage reading**:

@@ -3,7 +3,7 @@
 The backend's endpoints, request signature, and response shapes belong to the
 SmartCMobile product, so :mod:`.api` holds them. Each utility runs its own
 deployment, though, with its own host, utility id, and codes. A
-:class:`Utility` collects those values in one place (ADR 0014).
+:class:`Utility` collects those values in one place (ADR 0015).
 
 Only Alliant Energy is defined. Its values were confirmed live; another
 utility's values must be confirmed the same way before it is added, because a

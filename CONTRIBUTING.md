@@ -68,7 +68,7 @@ IP address (the portal has a lock counter).
 - **Unit codes.** A wrong `Uom` value returns an empty result, not an error.
   Gas needs `Therm` for hourly and daily data but `TH` for billing cycles
   (`docs/backend-api.md`). The codes are per utility, in `utility.py`
-  (ADR 0014).
+  (ADR 0015).
 - **Flow schemas.** Home Assistant now uses `probatio`, a drop-in replacement
   for `voluptuous`; `config_flow.py` imports it as `vol`.
 - **Recorder in tests.** The manifest depends on `recorder`, so every test sets
