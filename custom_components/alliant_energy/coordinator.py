@@ -10,8 +10,9 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
-from .const import DOMAIN, UPDATE_INTERVAL
+from .const import DOMAIN
 from .models import EnergyData
+from .options import update_interval
 from .provider import AlliantEnergyAuthError
 
 if TYPE_CHECKING:
@@ -36,7 +37,7 @@ class EnergyCoordinator(DataUpdateCoordinator[EnergyData]):
             logger=logging.getLogger(__name__),
             config_entry=config_entry,
             name=DOMAIN,
-            update_interval=UPDATE_INTERVAL,
+            update_interval=update_interval(config_entry),
         )
         self.client = client
 

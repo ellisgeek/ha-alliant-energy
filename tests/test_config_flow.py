@@ -2,8 +2,9 @@
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 from homeassistant.config_entries import SOURCE_USER
-from homeassistant.data_entry_flow import FlowResultType
+from homeassistant.data_entry_flow import FlowResultType, InvalidData
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.alliant_energy.api import (
@@ -164,8 +165,44 @@ async def test_options_flow_stores_rates(hass, enable_custom_integrations) -> No
         result["flow_id"], user_input={"electricity_rate": 0.24, "gas_rate": 0}
     )
     assert result["type"] is FlowResultType.CREATE_ENTRY
-    # Positive electricity rate kept; zero gas rate dropped.
-    assert result["data"] == {"electricity_rate": 0.24}
+    # Positive electricity rate kept; zero gas rate dropped; limits at defaults.
+    assert result["data"] == {
+        "electricity_rate": 0.24,
+        "max_history_days": 3650,
+        "update_interval_hours": 24,
+    }
+
+
+async def test_options_flow_stores_history_and_interval(hass, enable_custom_integrations) -> None:
+    entry = MockConfigEntry(domain=DOMAIN, unique_id="A1", data={"account_id": "A1"})
+    entry.add_to_hass(hass)
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], user_input={"max_history_days": 400, "update_interval_hours": 3}
+    )
+
+    assert result["data"] == {"max_history_days": 400, "update_interval_hours": 3}
+
+
+@pytest.mark.parametrize(
+    "user_input",
+    [
+        {"max_history_days": 29, "update_interval_hours": 24},
+        {"max_history_days": 3651, "update_interval_hours": 24},
+        {"max_history_days": 3650, "update_interval_hours": 2},
+        {"max_history_days": 3650, "update_interval_hours": 25},
+    ],
+)
+async def test_options_flow_rejects_out_of_range(
+    hass, enable_custom_integrations, user_input
+) -> None:
+    entry = MockConfigEntry(domain=DOMAIN, unique_id="A1", data={"account_id": "A1"})
+    entry.add_to_hass(hass)
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+
+    with pytest.raises(InvalidData):
+        await hass.config_entries.options.async_configure(result["flow_id"], user_input=user_input)
 
 
 async def test_reauth_updates_credentials(hass, enable_custom_integrations) -> None:

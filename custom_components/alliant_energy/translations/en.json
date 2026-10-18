@@ -51,11 +51,17 @@
   "options": {
     "step": {
       "init": {
-        "title": "Cost rates",
-        "description": "Leave a field blank to use the rate from your latest bill (the marginal rate read from the bill PDF, or the billing cycle's amount divided by its usage if the PDF can't be read). Enter a rate to use a fixed price instead.",
+        "title": "Options",
+        "description": "Rates: leave a field blank to use the rate from your latest bill (the marginal rate read from the bill PDF, or the billing cycle's amount divided by its usage if the PDF can't be read). Enter a rate to use a fixed price instead.",
         "data": {
           "electricity_rate": "Electricity rate ($/kWh)",
-          "gas_rate": "Gas rate ($/therm)"
+          "gas_rate": "Gas rate ($/therm)",
+          "max_history_days": "Maximum history to import (days)",
+          "update_interval_hours": "Update interval (hours)"
+        },
+        "data_description": {
+          "max_history_days": "How far back to import hourly usage, up to 10 years. Changing this re-imports every meter once: raising it fetches older history, lowering it removes history older than the new limit.",
+          "update_interval_hours": "How often to check for new data, from 3 to 24 hours. Hourly usage arrives a day or two late, so updating more than once a day gains little."
         }
       }
     }
