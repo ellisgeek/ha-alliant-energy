@@ -203,7 +203,7 @@ class AlliantEnergyConfigFlow(ConfigFlow, domain=DOMAIN):
     @callback
     def async_remove(self) -> None:
         """Close the session when the flow ends, also when it is abandoned mid-way."""
-        self.hass.async_create_task(self._async_close())
+        self.hass.async_create_task(self._async_close(), "alliant_energy config flow close")
 
     async def _async_close(self) -> None:
         if self._api is not None:

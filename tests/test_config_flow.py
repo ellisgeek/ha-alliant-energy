@@ -273,6 +273,7 @@ async def test_login_errors_show_on_the_form(
 
     assert result["type"] is FlowResultType.FORM
     assert result["errors"] == {"base": reason}
+    await hass.async_block_till_done()  # the close runs as a task
     api.close.assert_awaited_once()
 
 
@@ -283,6 +284,7 @@ async def test_login_without_accounts_aborts(hass, enable_custom_integrations) -
 
     assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "no_accounts"
+    await hass.async_block_till_done()  # the close runs as a task
     api.close.assert_awaited_once()
 
 
@@ -302,6 +304,7 @@ async def test_tfa_code_that_cannot_be_sent_aborts(hass, enable_custom_integrati
 
     assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "cannot_connect"
+    await hass.async_block_till_done()  # the close runs as a task
     api.close.assert_awaited_once()
 
 
@@ -336,6 +339,7 @@ async def test_abandoned_flow_closes_the_session(hass, enable_custom_integration
     hass.config_entries.flow.async_abort(result["flow_id"])
     await hass.async_block_till_done()
 
+    await hass.async_block_till_done()  # the close runs as a task
     api.close.assert_awaited_once()
 
 
