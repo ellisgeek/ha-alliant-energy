@@ -97,6 +97,21 @@ async def test_bill_saved_by_another_parser_version_is_parsed_again(
     assert bill.itemized == parse_bill(PDF)
 
 
+async def test_corrupt_saved_bill_is_downloaded_again(hass: HomeAssistant, hass_storage) -> None:
+    """A saved bill that cannot be read (here, no invoice id) is not fatal."""
+    hass_storage["alliant_energy.bill.entry1"] = {
+        "version": 1,
+        "key": "alliant_energy.bill.entry1",
+        "data": {"parser_version": PARSER_VERSION, "bill": bill_to_dict(parse_bill(PDF))},
+    }
+    api = FakeApi()
+
+    bill = await _latest(hass, api).latest()
+
+    assert api.downloads == ["INV1"]
+    assert bill.itemized == parse_bill(PDF)
+
+
 async def test_unreadable_pdf_still_gives_the_summary(hass: HomeAssistant) -> None:
     """PDF reading is best-effort (ADR 0005)."""
     bill = await _latest(hass, FakeApi(pdf=AlliantEnergyError("HTTP 500"))).latest()

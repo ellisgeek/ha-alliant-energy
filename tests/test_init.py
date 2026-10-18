@@ -208,3 +208,43 @@ async def test_auth_failure_in_a_refresh_starts_no_import(
     client.async_update_statistics.assert_awaited_once()  # only the first refresh's
     flows = hass.config_entries.flow.async_progress_by_handler("alliant_energy")
     assert [flow["context"]["source"] for flow in flows] == ["reauth"]
+
+
+async def test_changing_options_reloads_the_entry(hass: HomeAssistant, config_entry) -> None:
+    first, second = _client(), _client()
+    with patch("custom_components.alliant_energy.LocalUtilityClient", side_effect=[first, second]):
+        assert await hass.config_entries.async_setup(config_entry.entry_id)
+        await hass.async_block_till_done()
+
+        hass.config_entries.async_update_entry(config_entry, options={"update_interval_hours": 6})
+        await hass.async_block_till_done()
+
+    first.async_close.assert_awaited_once()
+    assert config_entry.runtime_data.client is second
+    assert config_entry.runtime_data.update_interval == timedelta(hours=6)
+
+
+async def test_failed_unload_keeps_the_client_open(hass: HomeAssistant, config_entry) -> None:
+    client = _client()
+    await _setup(hass, config_entry, client)
+
+    with patch.object(hass.config_entries, "async_unload_platforms", return_value=False):
+        assert not await hass.config_entries.async_unload(config_entry.entry_id)
+
+    client.async_close.assert_not_awaited()
+
+
+async def test_failed_import_is_logged_and_retried_next_refresh(
+    hass: HomeAssistant, config_entry, caplog
+) -> None:
+    client = _client()
+    client.async_update_statistics.side_effect = RuntimeError("UsageAPI: HTTP 500")
+    await _setup(hass, config_entry, client)
+
+    assert "statistics import failed: UsageAPI: HTTP 500" in caplog.text
+    assert config_entry.state is ConfigEntryState.LOADED
+
+    client.async_update_statistics.side_effect = None
+    await config_entry.runtime_data.async_refresh()
+    await hass.async_block_till_done()
+    assert client.async_update_statistics.await_count == 2

@@ -1,6 +1,7 @@
 """Tests for the Home Assistant-facing provider client."""
 
 import asyncio
+from dataclasses import replace
 from datetime import date
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -100,8 +101,8 @@ BILL = ItemizedBill(
 )
 
 
-def _with_bill(api, hass_storage, client: LocalUtilityClient) -> None:
-    """Serve invoice INV1, already read and saved as ``BILL`` (no PDF download)."""
+def _with_bill(api, hass_storage, client: LocalUtilityClient, bill: ItemizedBill = BILL) -> None:
+    """Serve invoice INV1, already read and saved as ``bill`` (no PDF download)."""
     api.async_get_current_bill.return_value = BillSummary(invoice_id="INV1")
     key = f"alliant_energy.bill.{client.entry.entry_id}"
     hass_storage[key] = {
@@ -110,7 +111,7 @@ def _with_bill(api, hass_storage, client: LocalUtilityClient) -> None:
         "data": {
             "parser_version": PARSER_VERSION,
             "invoice_id": "INV1",
-            "bill": bill_to_dict(BILL),
+            "bill": bill_to_dict(bill),
         },
     }
 
@@ -542,3 +543,49 @@ async def test_rejected_login_is_not_retried_by_an_overlapping_update(
 
     assert all(isinstance(result, AlliantEnergyAuthError) for result in results)
     api.async_login.assert_awaited_once()
+
+
+async def test_account_without_a_premise_is_an_error(hass: HomeAssistant, api) -> None:
+    client = LocalUtilityClient(hass, _entry())  # no premise_id
+    api.async_get_accounts.return_value = [Account("other", "P0", {})]
+
+    with pytest.raises(AlliantEnergyError, match="acct-1"):
+        await client.async_fetch_data()
+
+    api.async_get_meters.assert_not_awaited()
+
+
+@pytest.mark.parametrize("option", ["abc", "", 0, -0.1, None])
+async def test_unusable_rate_option_is_ignored(hass: HomeAssistant, api, option) -> None:
+    client = LocalUtilityClient(hass, _entry(options={"electricity_rate": option}, premise_id="P1"))
+
+    await client.async_update_statistics(Bill(BillSummary()))
+
+    assert api.update_statistics.await_args.kwargs["rates"][SERVICE_ELECTRIC].static is None
+
+
+async def test_projection_without_a_read_window_uses_the_last_period_length(
+    hass: HomeAssistant, api, hass_storage
+) -> None:
+    """No next-read window: the electric cycle lasts as long as the last one (31
+    days); gas, with no billed days either, cannot be projected."""
+    client = LocalUtilityClient(hass, _entry(premise_id="P1"))
+    api.async_get_meters.return_value = [
+        Meter("E1", "P1", SERVICE_ELECTRIC, {}),
+        Meter("G1", "P1", SERVICE_GAS, {}),
+    ]
+    api.async_get_usage.side_effect = _usage_router(
+        daily_by_service={
+            SERVICE_ELECTRIC: [_daily(10.0, "2026-10-12T00:00:00")],
+            SERVICE_GAS: [_daily(1.0, "2026-10-12T00:00:00")],
+        },
+        monthly_by_service={},
+    )
+    _with_bill(api, hass_storage, client, replace(BILL, next_read_start=None, next_read_end=None))
+
+    data = await client.async_fetch_data()
+
+    assert data.services[SERVICE_ELECTRIC].cycle_days == 31
+    gas = data.services[SERVICE_GAS]
+    assert gas.rate is not None
+    assert (gas.cycle_days, gas.projected_cost) == (None, None)
