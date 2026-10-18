@@ -129,28 +129,6 @@ class LocalUtilityClient:
             )
         return known
 
-    @staticmethod
-    def _services(bill: Bill) -> dict[str, ServiceData]:
-        """Each service's details from the itemized bill."""
-        services: dict[str, ServiceData] = {}
-        for service in (SERVICE_ELECTRIC, SERVICE_GAS):
-            section = bill.section(service)
-            if section is None:
-                services[service] = ServiceData()
-                continue
-            services[service] = ServiceData(
-                rate_plan=section.rate_plan,
-                rate_plan_name=section.rate_plan_name,
-                customer_charge_per_day=section.customer_charge_per_day,
-                adjustment=bill.adjustment(service),
-                meter_number=section.meter_number,
-                meter_reading=section.meter_reading,
-                previous_meter_reading=section.previous_meter_reading,
-                meter_unit=section.meter_unit,
-                heat_factor=section.heat_factor,
-            )
-        return services
-
     async def _async_ensure_context(self) -> tuple[AlliantUsage, list[Meter]]:
         if not self._logged_in:
             await self._api.async_login(
@@ -193,55 +171,37 @@ class LocalUtilityClient:
                 cost[meter.service_type] = billed[-1]
 
         bill = await self._bills.latest()
-        services = self._services(bill)
-        # Show the cost rate the cost statistic uses for the newest hour.
+        known_rates = self._known_rates(bill)
         tz = dt_util.get_default_time_zone()
-        for service, known in self._known_rates(bill).items():
-            cycles = cycles_by_service.get(service, [])
-            if (rate := known_cost_rate(known, cycles, tz)) is not None:
-                value, source = rate.current
-                services[service] = replace(services[service], rate=value, rate_source=source)
-        # Project each service's cost for the billing cycle in progress.
-        for service, data in services.items():
-            section = bill.section(service)
+        services: dict[str, ServiceData] = {}
+        for service in (SERVICE_ELECTRIC, SERVICE_GAS):
+            latest_day = latest.get(service)
+            # Show the cost rate the cost statistic uses for the newest hour.
+            rate = known_cost_rate(known_rates[service], cycles_by_service.get(service, []), tz)
+            data = ServiceData(
+                latest_usage=latest_day[1] if latest_day else None,
+                latest_usage_date=latest_day[0] if latest_day else None,
+                last_bill_cost=cost.get(service),
+                rate=rate.current[0] if rate else None,
+                rate_source=rate.current[1] if rate else None,
+                section=bill.section(service),
+                adjustment=bill.adjustment(service),
+            )
+            # Project the cost of the billing cycle in progress.
+            section = data.section
             if section is not None and section.period_end is not None:
-                services[service] = _project(
+                data = _project(
                     data,
                     daily_by_service.get(service, []),
                     section.period_end,
                     _expected_next_read(bill.itemized, section),
                 )
+            services[service] = data
         projected = [d.projected_cost for d in services.values() if d.projected_cost is not None]
-        period = bill.section(SERVICE_ELECTRIC) or bill.section(SERVICE_GAS)
-        summary, itemized = bill.summary, bill.itemized
-
-        electric = latest.get(SERVICE_ELECTRIC)
-        gas = latest.get(SERVICE_GAS)
         return EnergyData(
-            electricity_kwh=electric[1] if electric else None,
-            gas_therms=gas[1] if gas else None,
-            electricity_cost=cost.get(SERVICE_ELECTRIC),
-            gas_cost=cost.get(SERVICE_GAS),
-            currency=CURRENCY_USD,
-            reading_dates={
-                SERVICE_ELECTRIC: electric[0].isoformat() if electric else None,
-                SERVICE_GAS: gas[0].isoformat() if gas else None,
-            },
-            amount_due=summary.amount_due,
-            current_charges=summary.current_charges,
-            past_due_amount=summary.past_due_amount,
-            previous_balance=summary.previous_balance,
-            due_date=summary.due_date,
-            invoice_date=summary.invoice_date,
-            invoice_id=summary.invoice_id,
+            bill=bill,
             services=services,
-            billing_period_start=period.period_start if period else None,
-            billing_period_end=period.period_end if period else None,
-            billed_days=period.billed_days if period else None,
-            next_meter_read_start=itemized.next_read_start if itemized else None,
-            next_meter_read_end=itemized.next_read_end if itemized else None,
-            average_temperature=itemized.average_temperature if itemized else None,
-            degree_days=itemized.degree_days if itemized else None,
+            currency=CURRENCY_USD,
             projected_bill=round(sum(projected), 2) if projected else None,
         )
 
@@ -295,11 +255,8 @@ def _project(
         return data
     usage = sum(by_day.values())
     days = len(by_day)
-    fixed = (
-        data.customer_charge_per_day or 0.0
-        if data.rate_source != RATE_SOURCE_BILLING_CYCLE
-        else 0.0
-    )
+    charge = data.section.customer_charge_per_day if data.section else None
+    fixed = (charge or 0.0) if data.rate_source != RATE_SOURCE_BILLING_CYCLE else 0.0
     return replace(
         data,
         usage_to_date=round(usage, 3),

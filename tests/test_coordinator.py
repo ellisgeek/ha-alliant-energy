@@ -13,7 +13,7 @@ from custom_components.alliant_energy.api import (
 )
 from custom_components.alliant_energy.const import DOMAIN
 from custom_components.alliant_energy.coordinator import EnergyCoordinator
-from custom_components.alliant_energy.models import EnergyData
+from custom_components.alliant_energy.models import EnergyData, ServiceData
 
 
 async def test_coordinator_refreshes_provider_data(
@@ -21,19 +21,16 @@ async def test_coordinator_refreshes_provider_data(
 ) -> None:
     """Coordinator stores provider readings after a refresh."""
     client = AsyncMock()
-    client.async_fetch_data.return_value = EnergyData(
-        electricity_kwh=12.5,
-        gas_therms=3.2,
-        electricity_cost=4.1,
-        gas_cost=1.8,
+    data = EnergyData(
+        services={"electric": ServiceData(latest_usage=12.5), "gas": ServiceData(latest_usage=3.2)},
         currency="USD",
     )
+    client.async_fetch_data.return_value = data
     coordinator = EnergyCoordinator(hass, config_entry, client)
 
     await coordinator.async_refresh()
 
-    assert coordinator.data.electricity_kwh == 12.5
-    assert coordinator.data.gas_therms == 3.2
+    assert coordinator.data is data
     client.async_fetch_data.assert_awaited_once()
 
 

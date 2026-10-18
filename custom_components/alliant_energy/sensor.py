@@ -20,9 +20,9 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .api import SERVICE_ELECTRIC, SERVICE_GAS
-from .const import DOMAIN
+from .const import DOMAIN, USAGE_UNIT
 from .coordinator import AlliantEnergyConfigEntry, EnergyCoordinator
-from .models import EnergyData, ServiceData
+from .models import EnergyData
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -35,104 +35,182 @@ class AlliantSensorDescription(SensorEntityDescription):
     attrs_fn: Callable[[EnergyData], dict[str, Any]] | None = None
 
 
-def _svc(data: EnergyData, service: str) -> ServiceData:
-    return data.services.get(service) or ServiceData()
+def _price_unit(data: EnergyData, service: str) -> str | None:
+    return f"{data.currency}/{USAGE_UNIT[service]}" if data.currency else None
 
 
-def _rate_attrs(data: EnergyData, service: str) -> dict[str, Any]:
-    svc = _svc(data, service)
-    return {
-        "source": svc.rate_source,
-        "rate_plan": svc.rate_plan,
-        "customer_charge_per_day": svc.customer_charge_per_day,
-    }
+@dataclass(frozen=True)
+class _Service:
+    """How one service's sensors are keyed and named."""
+
+    service: str
+    key: str  # unique id prefix, e.g. "electricity"
+    name: str  # e.g. "Electricity"
+    usage_unit: str
+    meter_unit: str
+    adjustment_key: str
+    adjustment_name: str
 
 
-def _plan_attrs(data: EnergyData, service: str) -> dict[str, Any]:
-    return {"name": _svc(data, service).rate_plan_name}
+_ELECTRIC = _Service(
+    SERVICE_ELECTRIC,
+    "electricity",
+    "Electricity",
+    usage_unit=UnitOfEnergy.KILO_WATT_HOUR,
+    meter_unit=UnitOfEnergy.KILO_WATT_HOUR,
+    adjustment_key="fuel_adjustment",
+    adjustment_name="fuel adjustment",
+)
+_GAS = _Service(
+    SERVICE_GAS,
+    "gas",
+    "Gas",
+    usage_unit="therm",
+    meter_unit=UnitOfVolume.CENTUM_CUBIC_FEET,
+    adjustment_key="supply_market_adjustment",
+    adjustment_name="supply market adjustment",
+)
 
 
-def _projection_attrs(data: EnergyData, service: str) -> dict[str, Any]:
-    svc = _svc(data, service)
-    return {
-        "usage_to_date": svc.usage_to_date,
-        "cost_to_date": svc.cost_to_date,
-        "days_to_date": svc.days_to_date,
-        "cycle_days": svc.cycle_days,
-    }
+def _section_value(data: EnergyData, service: str, attr: str) -> Any:
+    section = data.service(service).section
+    return getattr(section, attr) if section else None
 
 
-def _meter_attrs(data: EnergyData, service: str) -> dict[str, Any]:
-    svc = _svc(data, service)
-    return {
-        "meter_number": svc.meter_number,
-        "previous_reading": svc.previous_meter_reading,
-        "read_date": data.billing_period_end,
-    }
+def _service_sensors(svc: _Service) -> tuple[AlliantSensorDescription, ...]:
+    """The sensors every service has, keyed and named for this one."""
+    s = svc.service
+    return (
+        # Informational "latest reading" sensors. The data that feeds the
+        # Energy dashboard is imported as long-term statistics (see
+        # statistics.py), so they deliberately avoid energy/gas device classes.
+        AlliantSensorDescription(
+            key=f"{svc.key}_usage",
+            name=f"{svc.name} usage (latest day)",
+            native_unit_of_measurement=svc.usage_unit,
+            state_class=SensorStateClass.MEASUREMENT,
+            value_fn=lambda data: data.service(s).latest_usage,
+        ),
+        AlliantSensorDescription(
+            key=f"{svc.key}_cost",
+            name=f"{svc.name} last bill cost",
+            device_class=SensorDeviceClass.MONETARY,
+            value_fn=lambda data: data.service(s).last_bill_cost,
+        ),
+        AlliantSensorDescription(
+            key=f"{svc.key}_projected_cost",
+            name=f"{svc.name} projected cost",
+            device_class=SensorDeviceClass.MONETARY,
+            suggested_display_precision=2,
+            value_fn=lambda data: data.service(s).projected_cost,
+            attrs_fn=lambda data: {
+                "usage_to_date": data.service(s).usage_to_date,
+                "cost_to_date": data.service(s).cost_to_date,
+                "days_to_date": data.service(s).days_to_date,
+                "cycle_days": data.service(s).cycle_days,
+            },
+        ),
+        # Rate used for cost (options, bill PDF, or latest billing cycle) and
+        # the rate schedule from the bill.
+        AlliantSensorDescription(
+            key=f"{svc.key}_rate",
+            name=f"{svc.name} rate",
+            state_class=SensorStateClass.MEASUREMENT,
+            suggested_display_precision=5,
+            value_fn=lambda data: data.service(s).rate,
+            unit_fn=lambda data: _price_unit(data, s),
+            attrs_fn=lambda data: {
+                "source": data.service(s).rate_source,
+                "rate_plan": _section_value(data, s, "rate_plan"),
+                "customer_charge_per_day": _section_value(data, s, "customer_charge_per_day"),
+            },
+        ),
+        AlliantSensorDescription(
+            key=f"{svc.key}_rate_plan",
+            name=f"{svc.name} rate plan",
+            value_fn=lambda data: _section_value(data, s, "rate_plan"),
+            attrs_fn=lambda data: {"name": _section_value(data, s, "rate_plan_name")},
+        ),
+        # A charge that changes from bill to bill.
+        AlliantSensorDescription(
+            key=f"{svc.key}_{svc.adjustment_key}",
+            name=f"{svc.name} {svc.adjustment_name}",
+            state_class=SensorStateClass.MEASUREMENT,
+            suggested_display_precision=5,
+            value_fn=lambda data: data.service(s).adjustment,
+            unit_fn=lambda data: _price_unit(data, s),
+        ),
+        # The meter register reading from the bill. No energy/gas device class
+        # or state class: like the usage sensors, not an Energy dashboard source.
+        AlliantSensorDescription(
+            key=f"{svc.key}_meter_reading",
+            name=f"{svc.name} meter reading",
+            native_unit_of_measurement=svc.meter_unit,
+            value_fn=lambda data: _section_value(data, s, "meter_reading"),
+            attrs_fn=lambda data: {
+                "meter_number": _section_value(data, s, "meter_number"),
+                "previous_reading": _section_value(data, s, "previous_meter_reading"),
+                "read_date": data.billing_period.period_end if data.billing_period else None,
+            },
+        ),
+    )
 
 
-def _price_unit(data: EnergyData, unit: str) -> str | None:
-    return f"{data.currency}/{unit}" if data.currency else None
+def _period(attr: str) -> Callable[[EnergyData], Any]:
+    return lambda data: getattr(data.billing_period, attr) if data.billing_period else None
 
 
-# These are informational "latest reading" sensors. The data that feeds the
-# Energy dashboard is imported as long-term statistics (see statistics.py), not
-# from these entities, so they deliberately avoid energy/gas device classes
-# (gas is reported in therms, which the gas device class rejects).
+def _itemized(attr: str) -> Callable[[EnergyData], Any]:
+    return lambda data: getattr(data.bill.itemized, attr) if data.bill.itemized else None
+
+
 SENSOR_DESCRIPTIONS: tuple[AlliantSensorDescription, ...] = (
+    *_service_sensors(_ELECTRIC),
+    *_service_sensors(_GAS),
     AlliantSensorDescription(
-        key="electricity_usage",
-        name="Electricity usage (latest day)",
-        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        key="gas_heat_factor",
+        name="Gas heat factor",
         state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda data: data.electricity_kwh,
-    ),
-    AlliantSensorDescription(
-        key="gas_usage",
-        name="Gas usage (latest day)",
-        native_unit_of_measurement="therm",
-        state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda data: data.gas_therms,
-    ),
-    AlliantSensorDescription(
-        key="electricity_cost",
-        name="Electricity last bill cost",
-        device_class=SensorDeviceClass.MONETARY,
-        value_fn=lambda data: data.electricity_cost,
-    ),
-    AlliantSensorDescription(
-        key="gas_cost",
-        name="Gas last bill cost",
-        device_class=SensorDeviceClass.MONETARY,
-        value_fn=lambda data: data.gas_cost,
+        suggested_display_precision=2,
+        value_fn=lambda data: _section_value(data, SERVICE_GAS, "heat_factor"),
     ),
     # Account-level bill summary.
     AlliantSensorDescription(
         key="amount_due",
         name="Amount due",
         device_class=SensorDeviceClass.MONETARY,
-        value_fn=lambda data: data.amount_due,
+        value_fn=lambda data: data.bill.summary.amount_due,
     ),
     AlliantSensorDescription(
         key="current_charges",
         name="Current charges",
         device_class=SensorDeviceClass.MONETARY,
-        value_fn=lambda data: data.current_charges,
+        value_fn=lambda data: data.bill.summary.current_charges,
     ),
     AlliantSensorDescription(
         key="past_due_amount",
         name="Past due amount",
         device_class=SensorDeviceClass.MONETARY,
-        value_fn=lambda data: data.past_due_amount,
+        value_fn=lambda data: data.bill.summary.past_due_amount,
     ),
     AlliantSensorDescription(
         key="previous_balance",
         name="Previous balance",
         device_class=SensorDeviceClass.MONETARY,
-        value_fn=lambda data: data.previous_balance,
+        value_fn=lambda data: data.bill.summary.previous_balance,
     ),
-    # Rate used for cost (options, bill PDF, or latest billing cycle) and the
-    # rate schedule from the bill.
+    AlliantSensorDescription(
+        key="due_date",
+        name="Payment due date",
+        device_class=SensorDeviceClass.DATE,
+        value_fn=lambda data: data.bill.summary.due_date,
+    ),
+    AlliantSensorDescription(
+        key="invoice_date",
+        name="Invoice date",
+        device_class=SensorDeviceClass.DATE,
+        value_fn=lambda data: data.bill.summary.invoice_date,
+    ),
     AlliantSensorDescription(
         key="projected_bill",
         name="Projected bill",
@@ -140,122 +218,36 @@ SENSOR_DESCRIPTIONS: tuple[AlliantSensorDescription, ...] = (
         suggested_display_precision=2,
         value_fn=lambda data: data.projected_bill,
         attrs_fn=lambda data: {
-            "electric": _svc(data, SERVICE_ELECTRIC).projected_cost,
-            "gas": _svc(data, SERVICE_GAS).projected_cost,
+            "electric": data.service(SERVICE_ELECTRIC).projected_cost,
+            "gas": data.service(SERVICE_GAS).projected_cost,
         },
     ),
-    AlliantSensorDescription(
-        key="electricity_projected_cost",
-        name="Electricity projected cost",
-        device_class=SensorDeviceClass.MONETARY,
-        suggested_display_precision=2,
-        value_fn=lambda data: _svc(data, SERVICE_ELECTRIC).projected_cost,
-        attrs_fn=lambda data: _projection_attrs(data, SERVICE_ELECTRIC),
-    ),
-    AlliantSensorDescription(
-        key="gas_projected_cost",
-        name="Gas projected cost",
-        device_class=SensorDeviceClass.MONETARY,
-        suggested_display_precision=2,
-        value_fn=lambda data: _svc(data, SERVICE_GAS).projected_cost,
-        attrs_fn=lambda data: _projection_attrs(data, SERVICE_GAS),
-    ),
-    AlliantSensorDescription(
-        key="electricity_rate",
-        name="Electricity rate",
-        state_class=SensorStateClass.MEASUREMENT,
-        suggested_display_precision=5,
-        value_fn=lambda data: _svc(data, SERVICE_ELECTRIC).rate,
-        unit_fn=lambda data: _price_unit(data, UnitOfEnergy.KILO_WATT_HOUR),
-        attrs_fn=lambda data: _rate_attrs(data, SERVICE_ELECTRIC),
-    ),
-    AlliantSensorDescription(
-        key="gas_rate",
-        name="Gas rate",
-        state_class=SensorStateClass.MEASUREMENT,
-        suggested_display_precision=5,
-        value_fn=lambda data: _svc(data, SERVICE_GAS).rate,
-        unit_fn=lambda data: _price_unit(data, UnitOfEnergy.THERM),
-        attrs_fn=lambda data: _rate_attrs(data, SERVICE_GAS),
-    ),
-    AlliantSensorDescription(
-        key="electricity_rate_plan",
-        name="Electricity rate plan",
-        value_fn=lambda data: _svc(data, SERVICE_ELECTRIC).rate_plan,
-        attrs_fn=lambda data: _plan_attrs(data, SERVICE_ELECTRIC),
-    ),
-    AlliantSensorDescription(
-        key="gas_rate_plan",
-        name="Gas rate plan",
-        value_fn=lambda data: _svc(data, SERVICE_GAS).rate_plan,
-        attrs_fn=lambda data: _plan_attrs(data, SERVICE_GAS),
-    ),
-    # Charges that change from bill to bill.
-    AlliantSensorDescription(
-        key="electricity_fuel_adjustment",
-        name="Electricity fuel adjustment",
-        state_class=SensorStateClass.MEASUREMENT,
-        suggested_display_precision=5,
-        value_fn=lambda data: _svc(data, SERVICE_ELECTRIC).adjustment,
-        unit_fn=lambda data: _price_unit(data, UnitOfEnergy.KILO_WATT_HOUR),
-    ),
-    AlliantSensorDescription(
-        key="gas_supply_market_adjustment",
-        name="Gas supply market adjustment",
-        state_class=SensorStateClass.MEASUREMENT,
-        suggested_display_precision=5,
-        value_fn=lambda data: _svc(data, SERVICE_GAS).adjustment,
-        unit_fn=lambda data: _price_unit(data, UnitOfEnergy.THERM),
-    ),
-    # Meter register readings from the bill. No energy/gas device class or state
-    # class: like the usage sensors, they are not Energy dashboard sources.
-    AlliantSensorDescription(
-        key="electricity_meter_reading",
-        name="Electricity meter reading",
-        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
-        value_fn=lambda data: _svc(data, SERVICE_ELECTRIC).meter_reading,
-        attrs_fn=lambda data: _meter_attrs(data, SERVICE_ELECTRIC),
-    ),
-    AlliantSensorDescription(
-        key="gas_meter_reading",
-        name="Gas meter reading",
-        native_unit_of_measurement=UnitOfVolume.CENTUM_CUBIC_FEET,
-        value_fn=lambda data: _svc(data, SERVICE_GAS).meter_reading,
-        attrs_fn=lambda data: _meter_attrs(data, SERVICE_GAS),
-    ),
-    AlliantSensorDescription(
-        key="gas_heat_factor",
-        name="Gas heat factor",
-        state_class=SensorStateClass.MEASUREMENT,
-        suggested_display_precision=2,
-        value_fn=lambda data: _svc(data, SERVICE_GAS).heat_factor,
-    ),
-    # Billing cycle and weather, from the bill.
+    # Billing cycle and weather, from the itemized bill.
     AlliantSensorDescription(
         key="billing_period_start",
         name="Billing period start",
         device_class=SensorDeviceClass.DATE,
-        value_fn=lambda data: data.billing_period_start,
+        value_fn=_period("period_start"),
     ),
     AlliantSensorDescription(
         key="billing_period_end",
         name="Billing period end",
         device_class=SensorDeviceClass.DATE,
-        value_fn=lambda data: data.billing_period_end,
+        value_fn=_period("period_end"),
     ),
     AlliantSensorDescription(
         key="billed_days",
         name="Days billed",
         device_class=SensorDeviceClass.DURATION,
         native_unit_of_measurement=UnitOfTime.DAYS,
-        value_fn=lambda data: data.billed_days,
+        value_fn=_period("billed_days"),
     ),
     AlliantSensorDescription(
         key="next_meter_read",
         name="Next meter reading",
         device_class=SensorDeviceClass.DATE,
-        value_fn=lambda data: data.next_meter_read_start,
-        attrs_fn=lambda data: {"window_end": data.next_meter_read_end},
+        value_fn=_itemized("next_read_start"),
+        attrs_fn=lambda data: {"window_end": _itemized("next_read_end")(data)},
     ),
     AlliantSensorDescription(
         key="average_temperature",
@@ -263,25 +255,13 @@ SENSOR_DESCRIPTIONS: tuple[AlliantSensorDescription, ...] = (
         device_class=SensorDeviceClass.TEMPERATURE,
         native_unit_of_measurement=UnitOfTemperature.FAHRENHEIT,
         state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda data: data.average_temperature,
+        value_fn=_itemized("average_temperature"),
     ),
     AlliantSensorDescription(
         key="degree_days",
         name="Billing period degree days",
         state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda data: data.degree_days,
-    ),
-    AlliantSensorDescription(
-        key="due_date",
-        name="Payment due date",
-        device_class=SensorDeviceClass.DATE,
-        value_fn=lambda data: data.due_date,
-    ),
-    AlliantSensorDescription(
-        key="invoice_date",
-        name="Invoice date",
-        device_class=SensorDeviceClass.DATE,
-        value_fn=lambda data: data.invoice_date,
+        value_fn=_itemized("degree_days"),
     ),
 )
 
