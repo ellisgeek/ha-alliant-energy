@@ -12,10 +12,14 @@ static rate still prices every hour.
 
 Past bills are read only when older hours need a price: on a full-history
 import and on a cost reprice. Normal updates price recent hours with the
-latest bill. Past bills never change, so each PDF is downloaded and parsed once
-and its itemized bill saved per config entry (`alliant_energy.bills.<entry>`).
-A past PDF that fails to read is left out, its cycle uses the effective rate,
-and it is tried again on the next full import or reprice.
+latest bill and never list past bills. Past bills never change, so each PDF is
+downloaded and parsed once and its itemized bill saved per config entry
+(`alliant_energy.bills.<entry>`). Bills are listed a year per request, and one
+listing serves every service of an import. Reading past bills is best-effort:
+a PDF that fails is left out, so the previous bill's marginal rate covers its
+cycle too (or the effective rate, for the oldest bills). It is read again only
+by a later full import or reprice, not on its own, so a failure is not retried
+on every update. If listing the bills fails, cost uses the effective rates.
 
 ## Consequences
 
@@ -25,3 +29,6 @@ and it is tried again on the next full import or reprice.
   For ten years of history that is up to about 120 downloads.
 - The step in cost where the marginal rate began (ADR 0012) now appears only
   before the oldest bill read.
+- A `PARSER_VERSION` bump re-reads saved past bills on the next full import or
+  reprice, but does not trigger one; bump the cost rate identity too when a
+  parser change should reprice history.

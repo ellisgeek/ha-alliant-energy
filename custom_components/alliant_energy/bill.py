@@ -11,14 +11,14 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 from typing import Any
 
 import homeassistant.util.dt as dt_util
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.storage import Store
 
-from .api import AlliantEnergyApi, AlliantEnergyAuthError, BillSummary
+from .api import AlliantEnergyApi, AlliantEnergyAuthError, BillSummary, PastBill
 from .billparser import (
     PARSER_VERSION,
     ItemizedBill,
@@ -31,6 +31,9 @@ from .const import DOMAIN
 from .rates import MarginalRate
 
 _LOGGER = logging.getLogger(__name__)
+
+# bill/History requests span at most this many days each.
+_HISTORY_CHUNK_DAYS = 365
 
 
 @dataclass(frozen=True)
@@ -140,6 +143,9 @@ class PastBills:
         self._lock = asyncio.Lock()
         # The latest bill is usually among the past bills; reuse what it read.
         self._latest = latest
+        # Today's listing (day, since, bills), and invoices whose PDF failed today.
+        self._listing: tuple[date, date, list[PastBill]] | None = None
+        self._failed: dict[str, date] = {}
 
     async def marginal_rates(self, service: str, since: date) -> list[MarginalRate]:
         """The service's marginal rate from each bill issued since a date."""
@@ -153,29 +159,60 @@ class PastBills:
     async def _async_itemized_since(self, since: date) -> list[ItemizedBill]:
         async with self._lock:
             saved = await self._async_load()
-            past = await self._api.async_get_bill_history(
-                self._account, since, dt_util.now().date()
-            )
+            today = dt_util.now().date()
             itemized: list[ItemizedBill] = []
             changed = False
-            for bill in past:
-                if bill.invoice_id not in saved:
-                    read = (
-                        self._latest.itemized_for(bill.invoice_id) if self._latest else None
-                    ) or await self._async_read(bill.invoice_id)
-                    if read is None:
-                        continue
-                    saved[bill.invoice_id] = read
-                    changed = True
-                itemized.append(saved[bill.invoice_id])
-            if changed:
-                await self._store.async_save(
-                    {
-                        "parser_version": PARSER_VERSION,
-                        "bills": {invoice: bill_to_dict(bill) for invoice, bill in saved.items()},
-                    }
-                )
+            try:
+                for bill in await self._async_list(since, today):
+                    if bill.invoice_id not in saved:
+                        if self._failed.get(bill.invoice_id) == today:
+                            continue  # failed earlier today; try again another day
+                        read = (
+                            self._latest.itemized_for(bill.invoice_id) if self._latest else None
+                        ) or await self._async_read(bill.invoice_id)
+                        if read is None:
+                            self._failed[bill.invoice_id] = today
+                            continue
+                        saved[bill.invoice_id] = read
+                        changed = True
+                    itemized.append(saved[bill.invoice_id])
+            finally:
+                # Keep what was read even when an auth error stops the loop.
+                if changed:
+                    await self._store.async_save(
+                        {
+                            "parser_version": PARSER_VERSION,
+                            "bills": {k: bill_to_dict(v) for k, v in saved.items()},
+                        }
+                    )
             return itemized
+
+    async def _async_list(self, since: date, today: date) -> list[PastBill]:
+        """Bills issued since a date, a year per request (best-effort).
+
+        A listing made today that reaches back far enough is reused, so the
+        services of one import share it.
+        """
+        if self._listing is not None:
+            day, start, bills = self._listing
+            if day == today and start <= since:
+                return [b for b in bills if b.bill_date is None or b.bill_date >= since]
+        bills: list[PastBill] = []
+        chunk_start = since
+        try:
+            while chunk_start <= today:
+                chunk_end = min(chunk_start + timedelta(days=_HISTORY_CHUNK_DAYS - 1), today)
+                bills.extend(
+                    await self._api.async_get_bill_history(self._account, chunk_start, chunk_end)
+                )
+                chunk_start = chunk_end + timedelta(days=1)
+        except AlliantEnergyAuthError:
+            raise
+        except Exception as err:  # noqa: BLE001 - best-effort: cost uses effective rates
+            _LOGGER.warning("Could not list the past bills: %s", err)
+            return []
+        self._listing = (today, since, bills)
+        return bills
 
     async def _async_read(self, invoice: str) -> ItemizedBill | None:
         try:

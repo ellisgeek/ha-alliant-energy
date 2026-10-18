@@ -110,9 +110,10 @@ def cost_rate(
 ) -> CostRate | None:
     """Return the cost rate for one service, or None when no rate is known.
 
-    ``marginals`` are (rate, billing cycle start) from the bills read. Each
-    covers its cycle until the next bill's cycle starts; the latest covers every
-    later hour. Older hours use their billing cycle's effective rate.
+    ``marginals`` are (rate, billing cycle start) from the bills read, newest
+    first: the latest bill's comes first. Each covers its cycle until the next
+    bill's cycle starts; the latest covers every later hour. Older hours use
+    their billing cycle's effective rate.
     """
     if static is not None:
         return CostRate([_Span(None, None, static, RATE_SOURCE_OPTIONS)])
@@ -122,13 +123,21 @@ def cost_rate(
         # A cycle billed at 0 has no cost data yet; treat it as missing.
         if cycle.cost and cycle.usage
     ]
-    # The latest bill can also be among the past bills read: one rate per start.
-    placed = sorted({start: rate for rate, start in marginals if start is not None}.items())
-    unplaced = [rate for rate, start in marginals if start is None]
-    if not placed and unplaced:
-        # A bill without its cycle's start takes over after the latest billed
-        # cycle, or prices every hour when no cycle is known.
-        placed = [(spans[-1].end if spans else None, unplaced[0])]
+    # One rate per cycle start; marginal rates come newest first, so a newer
+    # bill (such as a corrected rebill) wins over an older one.
+    by_start: dict[datetime, float] = {}
+    for rate, start in marginals:
+        if start is not None:
+            by_start.setdefault(start, rate)
+    placed: list[tuple[datetime | None, float]] = sorted(by_start.items())
+    if marginals and marginals[0][1] is None:
+        # The latest bill gave no cycle start: it takes over after the latest
+        # billed cycle and after every older bill's cycle start, or prices
+        # every hour when nothing else is known.
+        after = [start for start, _ in placed] + ([spans[-1].end] if spans else [])
+        newest = max((s for s in after if s is not None), default=None)
+        placed = [(s, r) for s, r in placed if newest is None or (s is not None and s < newest)]
+        placed.append((newest, marginals[0][0]))
     if placed:
         first = placed[0][0]
         if first is not None:

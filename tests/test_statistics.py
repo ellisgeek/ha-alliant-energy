@@ -604,3 +604,16 @@ async def test_cost_priced_before_per_cycle_marginal_rates_is_repriced_once(
 
     assert [state for state, _ in await _rows(hass, cost_id)] == pytest.approx([0.15, 0.17])
     assert past.reads == [date(2026, 9, 20)]
+
+
+async def test_normal_updates_read_no_past_bills_even_without_a_cycle_start(hass) -> None:
+    """Only a full import or a reprice reads past bills (ADR 0007, ADR 0014)."""
+    meter = Meter("E1", "P1", SERVICE_ELECTRIC, {})
+    hours = _hours("2026-10-07", [1.0])
+    past = FakeBillHistory([MarginalRate(0.15, date(2026, 9, 1))])
+    await _run_meter(hass, _usage(hourly=hours), meter, marginal=0.17, past=past)  # full import
+    reads = len(past.reads)
+
+    await _run_meter(hass, _usage(hourly=hours), meter, marginal=0.17, past=past)
+
+    assert len(past.reads) == reads

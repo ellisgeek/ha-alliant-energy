@@ -195,3 +195,31 @@ def test_derived_cost_from_before_per_cycle_marginal_rates_is_repriced() -> None
     rate = cost_rate(static=None, marginals=[], cycles=[OCTOBER])
     assert rate is not None
     assert rate.identity != "derived"
+
+
+def test_latest_bill_without_a_start_still_prices_the_newest_hours() -> None:
+    """It takes over after the latest billed cycle, not before older bills' cycles."""
+    rate = cost_rate(
+        static=None,
+        marginals=[
+            (0.19, None),  # the latest bill, first; its PDF gave no cycle start
+            (0.16, datetime(2026, 9, 1, 5, tzinfo=UTC)),
+            (0.15, datetime(2026, 8, 1, 5, tzinfo=UTC)),
+        ],
+        cycles=[SEPTEMBER],  # billed through 2026-10-01
+    )
+
+    assert rate is not None
+    assert rate(datetime(2026, 8, 15, tzinfo=UTC)) == pytest.approx(0.15)
+    assert rate(datetime(2026, 9, 15, tzinfo=UTC)) == pytest.approx(0.16)
+    assert rate(datetime(2026, 10, 15, tzinfo=UTC)) == pytest.approx(0.19)
+    assert rate.current == (pytest.approx(0.19), RATE_SOURCE_BILL)
+
+
+def test_newer_bill_wins_when_two_bills_share_a_cycle() -> None:
+    """Marginal rates come newest first, so a corrected rebill beats the original."""
+    october = datetime(2026, 10, 1, 5, tzinfo=UTC)
+    rate = cost_rate(static=None, marginals=[(0.17, october), (0.18, october)], cycles=[])
+
+    assert rate is not None
+    assert rate(datetime(2026, 10, 15, tzinfo=UTC)) == pytest.approx(0.17)

@@ -164,7 +164,9 @@ async def _async_update_meter(
     reprice = cost_last is None or priced_with != cost_identity(known.static)
     # Cost is appended from the older of the two last imported hours.
     since = cons_last[0] if reprice or cost_last is None else min(cons_last[0], cost_last[0])
-    rate = await _async_cost_rate(usage, meter, tz, known, _local_date(since, tz), past)
+    # Past bills only for older hours: a full import or a reprice, never a normal
+    # update (ADR 0014).
+    rate = await _async_cost_rate(usage, meter, tz, known, _local_date(since, tz))
 
     if rate is None:
         # No cost to add or reprice: import usage only, from the last usage hour.
