@@ -18,12 +18,20 @@ RATE_SOURCE_BILLING_CYCLE = "billing_cycle"  # a billing cycle's amount / usage
 
 
 @dataclass(frozen=True)
+class MarginalRate:
+    """A bill's marginal rate for a service, and when its billing cycle started."""
+
+    rate: float
+    start: date | None  # None when the bill gives no billing cycle start
+
+
+@dataclass(frozen=True)
 class KnownRates:
     """The rates known for a service before its billing cycles are read."""
 
     static: float | None = None
-    marginal: float | None = None  # from the latest bill
-    marginal_from: date | None = None  # start of that bill's billing cycle
+    # Marginal rates from the bills read, any order; the latest bill's at least.
+    marginals: tuple[MarginalRate, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -87,17 +95,25 @@ class CostRate:
 
 
 def cost_identity(static: float | None) -> str:
-    """The identity of every cost rate built with this static rate."""
-    return f"static:{static!r}" if static is not None else "derived"
+    """The identity of every cost rate built with this static rate.
+
+    "derived:2" since each billing cycle uses its own bill's marginal rate
+    (ADR 0014); cost recorded as "derived" is repriced once.
+    """
+    return f"static:{static!r}" if static is not None else "derived:2"
 
 
 def cost_rate(
     static: float | None,
-    marginal: float | None,
-    marginal_from: datetime | None,
+    marginals: list[tuple[float, datetime | None]],
     cycles: list[BillingCycle],
 ) -> CostRate | None:
-    """Return the cost rate for one service, or None when no rate is known."""
+    """Return the cost rate for one service, or None when no rate is known.
+
+    ``marginals`` are (rate, billing cycle start) from the bills read. Each
+    covers its cycle until the next bill's cycle starts; the latest covers every
+    later hour. Older hours use their billing cycle's effective rate.
+    """
     if static is not None:
         return CostRate([_Span(None, None, static, RATE_SOURCE_OPTIONS)])
     spans = [
@@ -106,24 +122,33 @@ def cost_rate(
         # A cycle billed at 0 has no cost data yet; treat it as missing.
         if cycle.cost and cycle.usage
     ]
-    if marginal is not None:
-        # The bill's marginal rate takes over from its billing cycle onward.
-        # Without the cycle's start, it takes over after the latest billed cycle.
-        if marginal_from is None and spans:
-            marginal_from = spans[-1].end
-        if marginal_from is not None:
+    # The latest bill can also be among the past bills read: one rate per start.
+    placed = sorted({start: rate for rate, start in marginals if start is not None}.items())
+    unplaced = [rate for rate, start in marginals if start is None]
+    if not placed and unplaced:
+        # A bill without its cycle's start takes over after the latest billed
+        # cycle, or prices every hour when no cycle is known.
+        placed = [(spans[-1].end if spans else None, unplaced[0])]
+    if placed:
+        first = placed[0][0]
+        if first is not None:
             spans = [
-                _Span(span.start, min(span.end, marginal_from), span.rate, span.source)
+                _Span(span.start, min(span.end, first), span.rate, span.source)
                 for span in spans
-                if span.start is not None and span.end is not None and span.start < marginal_from
+                if span.start is not None and span.end is not None and span.start < first
             ]
-        spans.append(_Span(marginal_from, None, marginal, RATE_SOURCE_BILL))
+        else:
+            spans = []
+        for n, (start, rate) in enumerate(placed):
+            end = placed[n + 1][0] if n + 1 < len(placed) else None
+            spans.append(_Span(start, end, rate, RATE_SOURCE_BILL))
     return CostRate(spans) if spans else None
 
 
 def known_cost_rate(known: KnownRates, cycles: list[BillingCycle], tz: tzinfo) -> CostRate | None:
-    """The cost rate from known rates; a marginal rate starts at local midnight."""
-    marginal_from = (
-        datetime.combine(known.marginal_from, time(), tz) if known.marginal_from else None
-    )
-    return cost_rate(known.static, known.marginal, marginal_from, cycles)
+    """The cost rate from known rates; a bill's cycle starts at local midnight."""
+    marginals = [
+        (m.rate, datetime.combine(m.start, time(), tz) if m.start else None)
+        for m in known.marginals
+    ]
+    return cost_rate(known.static, marginals, cycles)

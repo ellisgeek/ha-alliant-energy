@@ -43,3 +43,6 @@ history from Alliant again.
   cost statistic is repriced when a rate is available again.
 - A full-history rebuild (ADR 0011) with no rate available clears the cost
   statistic along with the usage, so both match the history limit.
+
+See [ADR 0014](0014-price-each-billing-cycle-at-its-own-bill.md): past bills are now read, so
+each billing cycle uses its own bill's marginal rate.

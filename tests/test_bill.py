@@ -10,13 +10,16 @@ from homeassistant.core import HomeAssistant
 
 from custom_components.alliant_energy.api import (
     SERVICE_ELECTRIC,
+    SERVICE_GAS,
     AlliantEnergyApi,
     AlliantEnergyAuthError,
     AlliantEnergyError,
     BillSummary,
+    PastBill,
 )
-from custom_components.alliant_energy.bill import LatestBill, async_forget_bill
+from custom_components.alliant_energy.bill import LatestBill, PastBills, async_forget_bill
 from custom_components.alliant_energy.billparser import PARSER_VERSION, bill_to_dict, parse_bill
+from custom_components.alliant_energy.rates import MarginalRate
 
 PDF = (Path(__file__).parent / "fixtures" / "bill_2026_10.pdf").read_bytes()
 SUMMARY = BillSummary(amount_due=97.12, due_date=date(2026, 11, 3), invoice_id="INV1")
@@ -29,6 +32,14 @@ class FakeApi:
         self.summary = summary
         self.pdf = pdf
         self.downloads: list[str] = []
+        self.history: list[PastBill] = []
+        self.history_requests: list[tuple[date, date]] = []
+
+    async def async_get_bill_history(
+        self, account_number: str, start: date, end: date
+    ) -> list[PastBill]:
+        self.history_requests.append((start, end))
+        return self.history
 
     async def async_get_current_bill(self, account_number: str) -> BillSummary:
         return self.summary
@@ -160,4 +171,80 @@ async def test_overlapping_reads_download_a_new_pdf_once(hass: HomeAssistant) ->
 
     await asyncio.gather(latest.latest(), latest.latest())
 
+    assert api.downloads == ["INV1"]
+
+
+def _past(hass: HomeAssistant, api: FakeApi) -> PastBills:
+    return PastBills(hass, cast(AlliantEnergyApi, api), "acct", "entry1")
+
+
+async def test_past_bills_give_each_billing_cycle_its_marginal_rate(
+    hass: HomeAssistant, freezer
+) -> None:
+    freezer.move_to("2027-03-01T12:00:00-06:00")
+    api = FakeApi()
+    api.history = [PastBill("INV1", date(2027, 2, 7))]
+
+    electric = await _past(hass, api).marginal_rates(SERVICE_ELECTRIC, date(2026, 12, 1))
+
+    # The fixture bill: electric 0.15235 $/kWh for the cycle from 2027-01-06.
+    assert electric == [MarginalRate(0.15235, date(2027, 1, 6))]
+    assert api.history_requests == [(date(2026, 12, 1), date(2027, 3, 1))]
+
+
+async def test_each_past_pdf_is_read_once_even_after_a_restart(hass: HomeAssistant) -> None:
+    """Past bills never change, so their PDFs are saved for good."""
+    api = FakeApi()
+    api.history = [PastBill("INV1", date(2027, 2, 7))]
+    await _past(hass, api).marginal_rates(SERVICE_ELECTRIC, date(2026, 12, 1))
+    await _past(hass, api).marginal_rates(SERVICE_GAS, date(2026, 12, 1))
+
+    assert api.downloads == ["INV1"]
+
+
+async def test_unreadable_past_pdf_is_skipped_and_tried_again_later(
+    hass: HomeAssistant,
+) -> None:
+    api = FakeApi(pdf=AlliantEnergyError("HTTP 500"))
+    api.history = [PastBill("INV1", date(2027, 2, 7))]
+    past = _past(hass, api)
+
+    assert await past.marginal_rates(SERVICE_ELECTRIC, date(2026, 12, 1)) == []
+    api.pdf = PDF
+    assert await past.marginal_rates(SERVICE_ELECTRIC, date(2026, 12, 1)) != []
+    assert api.downloads == ["INV1", "INV1"]
+
+
+async def test_auth_error_while_reading_past_bills_is_raised(hass: HomeAssistant) -> None:
+    api = FakeApi(pdf=AlliantEnergyAuthError("expired"))
+    api.history = [PastBill("INV1", date(2027, 2, 7))]
+
+    with pytest.raises(AlliantEnergyAuthError):
+        await _past(hass, api).marginal_rates(SERVICE_ELECTRIC, date(2026, 12, 1))
+
+
+async def test_forgetting_the_bill_removes_saved_past_bills_too(
+    hass: HomeAssistant, hass_storage
+) -> None:
+    api = FakeApi()
+    api.history = [PastBill("INV1", date(2027, 2, 7))]
+    await _past(hass, api).marginal_rates(SERVICE_ELECTRIC, date(2026, 12, 1))
+    assert "alliant_energy.bills.entry1" in hass_storage
+
+    await async_forget_bill(hass, "entry1")
+
+    assert "alliant_energy.bills.entry1" not in hass_storage
+
+
+async def test_past_bills_reuse_the_latest_bill_already_read(hass: HomeAssistant) -> None:
+    """The bill history includes the latest invoice; its PDF is not read twice."""
+    api = FakeApi()
+    latest = _latest(hass, api)
+    await latest.latest()  # reads INV1
+    api.history = [PastBill("INV1", date(2027, 2, 7))]
+
+    past = PastBills(hass, cast(AlliantEnergyApi, api), "acct", "entry1", latest=latest)
+    rates = await past.marginal_rates(SERVICE_ELECTRIC, date(2026, 12, 1))
+
+    assert rates == [MarginalRate(0.15235, date(2027, 1, 6))]
     assert api.downloads == ["INV1"]

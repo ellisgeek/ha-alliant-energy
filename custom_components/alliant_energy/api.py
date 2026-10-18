@@ -157,6 +157,14 @@ class BillSummary:
     invoice_id: str | None = None  # identifies the bill's itemized PDF
 
 
+@dataclass(frozen=True)
+class PastBill:
+    """One of an account's past bills (bill/History): its invoice and date."""
+
+    invoice_id: str  # identifies the bill's itemized PDF
+    bill_date: date | None
+
+
 def _sign(body: Any) -> str:
     """Return the portal's request signature for a JSON body.
 
@@ -380,6 +388,27 @@ class AlliantEnergyApi:
             invoice_date=_parse_mdy(bill.get("invoiceDate")),
             invoice_id=bill.get("invoiceId") or None,
         )
+
+    async def async_get_bill_history(
+        self, account_number: str, start: date, end: date
+    ) -> list[PastBill]:
+        """Return the account's bills issued between two dates, newest first."""
+        data = await self._request(
+            "POST",
+            _SCM_SERVICE + "bill/History",
+            body={
+                "accountNumbers": [account_number],
+                "startDate": start.strftime("%m/%d/%Y"),
+                "endDate": end.strftime("%m/%d/%Y"),
+            },
+            signed=True,
+        )
+        rows = data.get("data") or []
+        return [
+            PastBill(invoice_id=str(row["invoiceId"]), bill_date=_parse_mdy(row.get("billDate")))
+            for row in rows
+            if isinstance(row, dict) and row.get("invoiceId")
+        ]
 
     async def async_get_bill_pdf(
         self, account_number: str, invoice_id: str, doc_type: str = "BILL"

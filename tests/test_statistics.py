@@ -29,7 +29,7 @@ from custom_components.alliant_energy.api import (
     Meter,
 )
 from custom_components.alliant_energy.const import DOMAIN
-from custom_components.alliant_energy.rates import BillingCycle, KnownRates
+from custom_components.alliant_energy.rates import BillingCycle, KnownRates, MarginalRate
 
 from .fake_usage import FakeUsage
 
@@ -71,17 +71,44 @@ def _hh_requests(usage: FakeUsage) -> list[tuple[str, str]]:
     return usage.ranges("hourly")
 
 
+class FakeBillHistory:
+    """Past bills' marginal rates for one service, recording each read."""
+
+    def __init__(self, marginals: list[MarginalRate]) -> None:
+        self._marginals = marginals
+        self.reads: list[date] = []
+
+    async def marginal_rates(self, service: str, since: date) -> list[MarginalRate]:
+        self.reads.append(since)
+        return list(self._marginals)
+
+
 async def _run_meter(
-    hass, usage, meter, rate=None, max_days=3650, marginal=None, marginal_from=None
+    hass,
+    usage,
+    meter,
+    rate=None,
+    max_days=3650,
+    marginal=None,
+    marginal_from=None,
+    past=None,
 ) -> None:
     """Import one meter through the real recorder and wait for the writes.
 
-    ``rate`` is the static rate; ``marginal`` the bill's, from ``marginal_from``.
+    ``rate`` is the static rate; ``marginal`` the latest bill's, from
+    ``marginal_from``; ``past`` the past bills.
     """
     await hass.config.async_set_time_zone("America/Chicago")
-    known = KnownRates(static=rate, marginal=marginal, marginal_from=marginal_from)
+    marginals = (MarginalRate(marginal, marginal_from),) if marginal is not None else ()
+    known = KnownRates(static=rate, marginals=marginals)
     await stats.async_update_statistics(
-        hass, usage, "acct", [meter], {meter.service_type: known}, max_history_days=max_days
+        hass,
+        usage,
+        "acct",
+        [meter],
+        {meter.service_type: known},
+        max_history_days=max_days,
+        past_bills=past,
     )
     await async_wait_recording_done(hass)
 
@@ -522,3 +549,58 @@ async def test_two_accounts_importing_at_once_both_keep_their_records(hass, hass
         stats.statistic_id("accta", meter),
         stats.statistic_id("acctb", meter),
     }
+
+
+async def test_each_billing_cycle_is_priced_at_its_own_bills_marginal_rate(hass) -> None:
+    """Past bills price their cycles; hours before any bill read use effective rates."""
+    meter = Meter("E1", "P1", SERVICE_ELECTRIC, {})
+    usage = _usage(
+        hourly=[
+            *_hours("2026-08-20", [1.0]),
+            *_hours("2026-09-20", [1.0]),
+            *_hours("2026-10-07", [1.0]),
+        ],
+        monthly=[
+            _monthly(100.0, 25.0, "2026-08-01T00:00:00", "2026-09-01T00:00:00")
+        ],  # August: 0.25 $/kWh effective
+    )
+    past = FakeBillHistory([MarginalRate(0.15, date(2026, 9, 1))])
+
+    await _run_meter(hass, usage, meter, marginal=0.17, marginal_from=date(2026, 10, 1), past=past)
+
+    cost = await _rows(hass, stats.statistic_id("acct", meter, "_cost"))
+    assert [state for state, _ in cost] == pytest.approx([0.25, 0.15, 0.17])
+
+
+async def test_updates_inside_the_latest_billing_cycle_read_no_past_bills(hass) -> None:
+    meter = Meter("E1", "P1", SERVICE_ELECTRIC, {})
+    hours = _hours("2026-10-07", [1.0])
+    october = date(2026, 10, 1)
+    await _run_meter(hass, _usage(hourly=hours), meter, marginal=0.17, marginal_from=october)
+
+    past = FakeBillHistory([MarginalRate(0.15, date(2026, 9, 1))])
+    await _run_meter(
+        hass, _usage(hourly=hours), meter, marginal=0.17, marginal_from=october, past=past
+    )
+
+    assert past.reads == []
+
+
+async def test_cost_priced_before_per_cycle_marginal_rates_is_repriced_once(
+    hass, hass_storage
+) -> None:
+    """Cost recorded as "derived" (ADR 0012) is repriced with past bills (ADR 0014)."""
+    meter = Meter("E1", "P1", SERVICE_ELECTRIC, {})
+    cost_id = stats.statistic_id("acct", meter, "_cost")
+    hours = [*_hours("2026-09-20", [1.0]), *_hours("2026-10-07", [1.0])]
+    october = date(2026, 10, 1)
+    await _run_meter(hass, _usage(hourly=hours), meter, marginal=0.17, marginal_from=october)
+    hass_storage["alliant_energy.statistics"]["data"]["cost_rates"][cost_id] = "derived"
+
+    past = FakeBillHistory([MarginalRate(0.15, date(2026, 9, 1))])
+    await _run_meter(
+        hass, _usage(hourly=hours), meter, marginal=0.17, marginal_from=october, past=past
+    )
+
+    assert [state for state, _ in await _rows(hass, cost_id)] == pytest.approx([0.15, 0.17])
+    assert past.reads == [date(2026, 9, 20)]

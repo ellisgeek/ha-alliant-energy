@@ -149,8 +149,13 @@ the bill summary: `totalAmountDue`, `currentCharges`, `pastDueAmount`,
 `previousBalance`, `netDueDate` and `invoiceDate` (`MM-DD-YYYY`), and
 `invoiceId`.
 
-`bill/History` (needs `startDate`/`endDate`) lists past bills. Its amounts are
-account totals for all services together.
+**`POST Services/api/1/bill/History`** with
+`{accountNumbers: [...], startDate, endDate}` (dates `MM/DD/YYYY`, signed like
+`bill/Current`; `accountNumber` as a string returns HTTP 400) lists the bills
+issued between the dates, newest first. Each row has `invoiceId` (usable with
+`bill/GetBillPdf`), `billDate` (`MM-DD-YYYY`), `billingDays`, `currentCharges`,
+`amountDue`, and `billPeriod`; `billStartDate`, `billEndDate`, and `dueDate`
+came back null. Its amounts are account totals for all services together.
 
 **`POST Services/api/1/bill/GetBillPdf`** with
 `{accountNumber, invoiceId, documentType: "BILL"}` returns `data.billPdf`, a
