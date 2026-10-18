@@ -15,4 +15,20 @@ jobs:
           enable-cache: true
       - run: uv sync --locked --group dev
       - run: uv run prek run --all-files --show-diff-on-failure
-      - run: uv run pytest
+      - run: >-
+          uv run pytest
+          --cov=custom_components/alliant_energy --cov-branch --cov-report=xml
+          --junitxml=junit.xml -o junit_family=legacy
+      - name: Upload coverage to Codecov
+        if: ${{ !cancelled() }}
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: coverage.xml
+      - name: Upload test results to Codecov
+        if: ${{ !cancelled() }}
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: junit.xml
+          report_type: test_results

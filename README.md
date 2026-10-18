@@ -1,6 +1,7 @@
 # Alliant Energy for Home Assistant
 
 [![HACS Custom](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](https://hacs.xyz/docs/faq/custom_repositories)
+[![codecov](https://codecov.io/gh/ellisgeek/ha-alliant-energy/graph/badge.svg)](https://codecov.io/gh/ellisgeek/ha-alliant-energy)
 
 A custom Home Assistant integration that reads electricity and gas usage,
 cost, and bills from an [Alliant Energy](https://myaccount.alliantenergy.com/)

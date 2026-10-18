@@ -13,6 +13,7 @@ dependencies = ["homeassistant>=2026.10", "curl_cffi==0.16.3"]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
+    "pytest-cov>=7.1.0",
     "pytest-homeassistant-custom-component>=0.13",
     "ruff>=0.6",
     "ty>=0.0.89",

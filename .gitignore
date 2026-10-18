@@ -273,3 +273,6 @@ $RECYCLE.BIN/
 # Local credentials for one-off live testing (never commit)
 .env.secret
 *.secret
+
+# Test results for Codecov (CI)
+junit.xml
