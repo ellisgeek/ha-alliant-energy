@@ -36,9 +36,9 @@ from .const import (
     CONF_USERNAME,
     CURRENCY_USD,
 )
-from .models import RATE_SOURCE_BILLING_CYCLE, EnergyData, ServiceData
+from .models import EnergyData, ServiceData
 from .options import max_history_days
-from .rates import BillingCycle, KnownRates, known_cost_rate
+from .rates import RATE_SOURCE_BILLING_CYCLE, BillingCycle, KnownRates, known_cost_rate
 from .usage import AlliantUsage
 
 _LOGGER = logging.getLogger(__name__)
@@ -178,12 +178,12 @@ class LocalUtilityClient:
             latest_day = latest.get(service)
             # Show the cost rate the cost statistic uses for the newest hour.
             rate = known_cost_rate(known_rates[service], cycles_by_service.get(service, []), tz)
+            value, source = rate.current if rate else (None, None)
             data = ServiceData(
                 latest_usage=latest_day[1] if latest_day else None,
-                latest_usage_date=latest_day[0] if latest_day else None,
                 last_bill_cost=cost.get(service),
-                rate=rate.current[0] if rate else None,
-                rate_source=rate.current[1] if rate else None,
+                rate=value,
+                rate_source=source,
                 section=bill.section(service),
                 adjustment=bill.adjustment(service),
             )

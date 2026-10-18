@@ -11,7 +11,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date, datetime, time, tzinfo
 
-from .models import RATE_SOURCE_BILL, RATE_SOURCE_BILLING_CYCLE, RATE_SOURCE_OPTIONS
+# Where a rate came from, in order of precedence.
+RATE_SOURCE_OPTIONS = "options"  # static rate set in the integration options
+RATE_SOURCE_BILL = "bill"  # marginal rate from the latest itemized bill
+RATE_SOURCE_BILLING_CYCLE = "billing_cycle"  # a billing cycle's amount / usage
 
 
 @dataclass(frozen=True)
