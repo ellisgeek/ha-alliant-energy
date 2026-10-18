@@ -23,6 +23,11 @@ from homeassistant.config_entries import (
     OptionsFlow,
 )
 from homeassistant.core import callback
+from homeassistant.helpers.selector import (
+    NumberSelector,
+    NumberSelectorConfig,
+    NumberSelectorMode,
+)
 
 from .api import (
     TFA_MODE_EMAIL,
@@ -36,11 +41,18 @@ from .const import (
     CONF_ACCOUNT_ID,
     CONF_ELECTRICITY_RATE,
     CONF_GAS_RATE,
+    CONF_MAX_HISTORY_DAYS,
     CONF_PASSWORD,
     CONF_PREMISE_ID,
+    CONF_UPDATE_INTERVAL_HOURS,
     CONF_USERNAME,
+    DEFAULT_MAX_HISTORY_DAYS,
     DOMAIN,
+    MAX_UPDATE_INTERVAL_HOURS,
+    MIN_HISTORY_DAYS,
+    MIN_UPDATE_INTERVAL_HOURS,
 )
+from .options import max_history_days, update_interval
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -226,17 +238,21 @@ class AlliantEnergyConfigFlow(ConfigFlow, domain=DOMAIN):
 
 
 class AlliantEnergyOptionsFlow(OptionsFlow):
-    """Options for cost calculation.
+    """Options: fixed cost rates, history limit, and update interval.
 
     Leave a rate blank to use the default: cost is derived from the bill's
     marginal rate (parsed from the PDF) or an effective rate per billing period;
-    a value here overrides it with a fixed price.
+    a value here overrides it with a fixed price. Changing the history limit
+    rebuilds every meter's statistics once (ADR 0011).
     """
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
-        """Manage the cost-rate options."""
+        """Manage the options."""
         if user_input is not None:
-            data: dict[str, float] = {}
+            data: dict[str, float | int] = {
+                CONF_MAX_HISTORY_DAYS: int(user_input[CONF_MAX_HISTORY_DAYS]),
+                CONF_UPDATE_INTERVAL_HOURS: int(user_input[CONF_UPDATE_INTERVAL_HOURS]),
+            }
             for key in (CONF_ELECTRICITY_RATE, CONF_GAS_RATE):
                 value = user_input.get(key)
                 if value is not None and value > 0:
@@ -254,6 +270,29 @@ class AlliantEnergyOptionsFlow(OptionsFlow):
                     CONF_GAS_RATE,
                     description={"suggested_value": options.get(CONF_GAS_RATE)},
                 ): vol.Coerce(float),
+                vol.Required(
+                    CONF_MAX_HISTORY_DAYS, default=max_history_days(self.config_entry)
+                ): NumberSelector(
+                    NumberSelectorConfig(
+                        min=MIN_HISTORY_DAYS,
+                        max=DEFAULT_MAX_HISTORY_DAYS,
+                        step=1,
+                        unit_of_measurement="days",
+                        mode=NumberSelectorMode.BOX,
+                    )
+                ),
+                vol.Required(
+                    CONF_UPDATE_INTERVAL_HOURS,
+                    default=int(update_interval(self.config_entry).total_seconds() // 3600),
+                ): NumberSelector(
+                    NumberSelectorConfig(
+                        min=MIN_UPDATE_INTERVAL_HOURS,
+                        max=MAX_UPDATE_INTERVAL_HOURS,
+                        step=1,
+                        unit_of_measurement="hours",
+                        mode=NumberSelectorMode.BOX,
+                    )
+                ),
             }
         )
         return self.async_show_form(step_id="init", data_schema=schema)

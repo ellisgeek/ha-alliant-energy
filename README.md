@@ -122,11 +122,18 @@ updates. The dashboard shows nothing for the last day or two.
 
 ### Options
 
-To use a fixed price, open **Settings > Devices & services > Alliant Energy**
-and select **Configure**. Enter an electricity rate ($/kWh), a gas rate
-($/therm), or both. Leave a field blank to use the rate from your bill. When
-you save, the integration reloads and imports new hours at that rate. Hours
-that were already imported keep their old cost.
+Open **Settings > Devices & services > Alliant Energy** and select
+**Configure**. When you save, the integration reloads.
+
+- **Electricity rate ($/kWh), Gas rate ($/therm):** a fixed price. Leave a
+  field blank to use the rate from your bill. New hours are imported at the
+  fixed rate; hours already imported keep their old cost.
+- **Maximum history to import:** how far back to import hourly usage, from 30
+  days to 10 years (default). Changing it re-imports every meter once: raising
+  it fetches older history, lowering it removes history older than the limit.
+- **Update interval:** how often to check for new data, from 3 to 24 hours
+  (default 24). Hourly usage arrives a day or two late, so more frequent
+  updates mostly refresh the bill sensors.
 
 ### Troubleshooting
 
@@ -238,7 +245,7 @@ mean temperature and a template that adds up `max(0, 65 - mean)` each day.
 - **Be gentle with your account.** Repeated failed logins can lock your IP
   address. If your password changes, Home Assistant asks you to re-enter it and
   does not keep retrying the old one.
-- Data updates every 6 hours.
+- Data updates once a day by default (see Options).
 - Hours that Alliant corrects after they were imported are not updated.
 
 ## How it works
@@ -255,7 +262,7 @@ Chrome TLS impersonation.
 | `billparser.py` | Reads marginal rates from the bill PDF (`pdfplumber`). |
 | `statistics.py` | Imports hourly usage and cost as long-term statistics for the Energy dashboard. |
 | `provider.py` | Connects the client to Home Assistant: owns the session, resolves rates, builds sensor data. |
-| `coordinator.py`, `sensor.py` | Polls every 6 hours and exposes sensors. |
+| `coordinator.py`, `sensor.py` | Polls on the update interval (default daily) and exposes sensors. |
 | `config_flow.py` | Login, account selection, reauthentication, two-factor fallback, rate options. |
 
 More detail:

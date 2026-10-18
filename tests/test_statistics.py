@@ -114,9 +114,9 @@ def _hh_requests(api) -> list[tuple[str, str]]:
     ]
 
 
-async def _run_meter(hass, api, meter, rate=None) -> None:
+async def _run_meter(hass, api, meter, rate=None, max_days=3650) -> None:
     """Import one meter through the real recorder and wait for the writes."""
-    await stats._async_update_meter(hass, api, "acct", "P1", meter, CHICAGO, rate)
+    await stats._async_update_meter(hass, api, "acct", "P1", meter, CHICAGO, rate, max_days)
     await async_wait_recording_done(hass)
 
 
@@ -328,3 +328,39 @@ async def test_statistics_from_an_earlier_version_are_rebuilt_once(hass) -> None
     after = _api(hourly=hours)
     await _run_meter(hass, after, meter)
     assert _hh_requests(after) == [("10/07/2026", "10/17/2026")]
+
+
+async def test_changing_the_history_limit_rebuilds_with_the_new_limit(hass) -> None:
+    """Lowering the limit rebuilds once and drops hours older than the limit."""
+    meter = Meter("E1", "P1", SERVICE_ELECTRIC, {})
+    cons_id = stats.statistic_id("acct", meter)
+    hours = [*_hours("2026-08-01", [5.0]), *_hours("2026-10-07", [1.0])]  # 78 and 11 days ago
+
+    await _run_meter(hass, _api(hourly=hours), meter)  # default limit: both kept
+    assert len(await _rows(hass, cons_id)) == 2
+
+    lowered = _api(hourly=hours)
+    await _run_meter(hass, lowered, meter, max_days=30)
+    assert _hh_requests(lowered) == [("09/18/2026", "10/17/2026")]  # walk stops at the limit
+    assert await _rows(hass, cons_id) == pytest.approx([(1.0, 1.0)])
+
+    again = _api(hourly=hours)
+    await _run_meter(hass, again, meter, max_days=30)  # same limit: normal update
+    assert _hh_requests(again) == [("10/07/2026", "10/17/2026")]
+
+
+async def test_store_from_the_first_version_counts_as_the_default_limit(hass, hass_storage) -> None:
+    """Meters recorded as a plain list need no rebuild at the default limit."""
+    meter = Meter("E1", "P1", SERVICE_ELECTRIC, {})
+    cons_id = stats.statistic_id("acct", meter)
+    await _run_meter(hass, _api(hourly=_hours("2026-10-07", [1.0])), meter)
+    hass_storage["alliant_energy.statistics"] = {
+        "version": 1,
+        "key": "alliant_energy.statistics",
+        "data": {"full_history": [cons_id]},
+    }
+
+    later = _api(hourly=_hours("2026-10-07", [1.0, 1.0]))
+    await _run_meter(hass, later, meter)
+
+    assert _hh_requests(later) == [("10/07/2026", "10/17/2026")]

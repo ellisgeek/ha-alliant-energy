@@ -29,6 +29,7 @@ import logging
 from collections.abc import Callable
 from datetime import date, datetime, timedelta, tzinfo
 from functools import partial
+from typing import Any
 
 import homeassistant.util.dt as dt_util
 from homeassistant.components.recorder.models import (
@@ -58,11 +59,11 @@ from .api import (
     UsageReading,
 )
 from .const import (
+    DEFAULT_MAX_HISTORY_DAYS,
     DOMAIN,
     STATISTICS_CHUNK_DAYS,
     STATISTICS_EMPTY_CHUNKS,
     STATISTICS_LAG_DAYS,
-    STATISTICS_MAX_HISTORY_DAYS,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -76,8 +77,9 @@ _RATE_LOOKBACK_DAYS = 400
 # Billing-period requests span at most this many days each.
 _RATE_CHUNK_DAYS = 365
 
-# Records which meters have their full history imported:
-# {"full_history": [<usage statistic id>, ...]}.
+# Records which meters have their full history imported, and with which history
+# limit: {"full_history": {<usage statistic id>: <max history days>}}. The first
+# version stored a list of ids; those were built with the default limit.
 _STORE_KEY = f"{DOMAIN}.statistics"
 _STORE_VERSION = 1
 
@@ -101,12 +103,15 @@ async def async_update_statistics(
     meters: list[Meter],
     electricity_rate: float | None = None,
     gas_rate: float | None = None,
+    max_history_days: int = DEFAULT_MAX_HISTORY_DAYS,
 ) -> None:
     """Import hourly usage (and cost, when a rate is known) for every meter."""
     tz = await dt_util.async_get_time_zone(hass.config.time_zone) or dt_util.UTC
     for meter in meters:
         rate = electricity_rate if meter.service_type == SERVICE_ELECTRIC else gas_rate
-        await _async_update_meter(hass, api, account_number, premise_number, meter, tz, rate)
+        await _async_update_meter(
+            hass, api, account_number, premise_number, meter, tz, rate, max_history_days
+        )
 
 
 async def _async_update_meter(
@@ -117,6 +122,7 @@ async def _async_update_meter(
     meter: Meter,
     tz: tzinfo,
     static_rate: float | None,
+    max_days: int = DEFAULT_MAX_HISTORY_DAYS,
 ) -> None:
     cons_id = statistic_id(account_number, meter)
     cost_id = statistic_id(account_number, meter, "_cost")
@@ -134,15 +140,16 @@ async def _async_update_meter(
     cons_last = await _async_last(hass, cons_id)
     cost_last = await _async_last(hass, cost_id) if rate_for is not None else None
 
-    # Rebuild from the full history when the meter was never imported in full,
-    # its usage statistic is missing, or a cost rate is newly available.
+    # Rebuild from the full history when the meter was never imported in full
+    # (or was imported with a different history limit), its usage statistic is
+    # missing, or a cost rate is newly available.
     if (
-        cons_id not in await _async_full_history_ids(hass)
+        (await _async_full_history_limits(hass)).get(cons_id) != max_days
         or cons_last is None
         or (rate_for is not None and cost_last is None)
     ):
         await _async_import_full_history(
-            hass, api, account_number, premise_number, meter, tz, static_rate
+            hass, api, account_number, premise_number, meter, tz, static_rate, max_days
         )
         return
 
@@ -162,14 +169,15 @@ async def _async_import_full_history(
     meter: Meter,
     tz: tzinfo,
     static_rate: float | None,
+    max_days: int,
 ) -> None:
-    """Replace a meter's statistics with every hour the API has."""
+    """Replace a meter's statistics with every hour the API has, up to the limit."""
     cons_id = statistic_id(account_number, meter)
     cost_id = statistic_id(account_number, meter, "_cost")
     _LOGGER.info("Importing the full hourly history for %s", cons_id)
 
     # Fetch everything before clearing, so a failed fetch keeps the old data.
-    native = await _async_fetch_history(api, account_number, premise_number, meter, tz)
+    native = await _async_fetch_history(api, account_number, premise_number, meter, tz, max_days)
     if not native:
         return
     oldest = native[0][0].astimezone(tz).date()
@@ -182,7 +190,7 @@ async def _async_import_full_history(
     _import_usage(hass, meter, cons_id, native, None)
     if rate_for is not None:
         _import_cost(hass, meter, cost_id, native, rate_for, None)
-    await _async_mark_full_history(hass, cons_id)
+    await _async_mark_full_history(hass, cons_id, max_days)
     _LOGGER.info("Imported %d hours for %s, back to %s", len(native), cons_id, oldest.isoformat())
 
 
@@ -236,19 +244,22 @@ def _import_cost(
     )
 
 
-def _store(hass: HomeAssistant) -> Store[dict[str, list[str]]]:
+def _store(hass: HomeAssistant) -> Store[dict[str, Any]]:
     return Store(hass, _STORE_VERSION, _STORE_KEY)
 
 
-async def _async_full_history_ids(hass: HomeAssistant) -> set[str]:
-    """Usage statistic ids whose meters have their full history imported."""
+async def _async_full_history_limits(hass: HomeAssistant) -> dict[str, int]:
+    """History limit (days) each meter's full history was imported with, by usage id."""
     data = await _store(hass).async_load() or {}
-    return set(data.get("full_history", []))
+    stored = data.get("full_history") or {}
+    if isinstance(stored, list):  # first version: ids only, built with the default
+        return dict.fromkeys(stored, DEFAULT_MAX_HISTORY_DAYS)
+    return {str(key): int(value) for key, value in stored.items()}
 
 
-async def _async_mark_full_history(hass: HomeAssistant, cons_id: str) -> None:
-    ids = await _async_full_history_ids(hass) | {cons_id}
-    await _store(hass).async_save({"full_history": sorted(ids)})
+async def _async_mark_full_history(hass: HomeAssistant, cons_id: str, max_days: int) -> None:
+    limits = await _async_full_history_limits(hass) | {cons_id: max_days}
+    await _store(hass).async_save({"full_history": dict(sorted(limits.items()))})
 
 
 async def _async_rate_fn(
@@ -400,16 +411,17 @@ async def _async_fetch_history(
     premise_number: str,
     meter: Meter,
     tz: tzinfo,
+    max_days: int = DEFAULT_MAX_HISTORY_DAYS,
 ) -> list[tuple[datetime, float]]:
     """Fetch every hourly reading the API has, walking back in chunks.
 
     Stops after ``STATISTICS_EMPTY_CHUNKS`` chunks in a row with no data (so a
-    short gap, such as a meter swap, does not end the history), or at the
-    ``STATISTICS_MAX_HISTORY_DAYS`` safety limit. Returns a sorted list of (UTC
+    short gap, such as a meter swap, does not end the history), or at
+    ``max_days`` back (the history limit option). Returns a sorted list of (UTC
     hour, native value).
     """
     now = dt_util.now(tz)
-    oldest = (now - timedelta(days=STATISTICS_MAX_HISTORY_DAYS)).date()
+    oldest = (now - timedelta(days=max_days)).date()
     chunk_end = (now - timedelta(days=STATISTICS_LAG_DAYS)).date()
 
     by_hour: dict[datetime, float] = {}

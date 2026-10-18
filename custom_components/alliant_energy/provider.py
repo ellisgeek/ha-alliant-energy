@@ -45,6 +45,7 @@ from .models import (
     EnergyData,
     ServiceData,
 )
+from .options import max_history_days
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -109,6 +110,7 @@ class LocalUtilityClient:
                 meters,
                 electricity_rate=services[SERVICE_ELECTRIC].rate,
                 gas_rate=services[SERVICE_GAS].rate,
+                max_history_days=max_history_days(self.entry),
             )
         except AlliantEnergyAuthError:
             self._logged_in = False
