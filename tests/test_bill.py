@@ -56,7 +56,7 @@ class FakeApi:
 
 
 def _latest(hass: HomeAssistant, api: FakeApi) -> LatestBill:
-    return LatestBill(hass, cast(AlliantEnergyApi, api), "acct", "entry1")
+    return LatestBill(hass, cast(AlliantEnergyApi, api), "acct", "entry1", parse_bill)
 
 
 async def test_latest_bill_has_the_summary_and_the_itemized_pdf(hass: HomeAssistant) -> None:
@@ -179,7 +179,7 @@ async def test_overlapping_reads_download_a_new_pdf_once(hass: HomeAssistant) ->
 
 
 def _past(hass: HomeAssistant, api: FakeApi) -> PastBills:
-    return PastBills(hass, cast(AlliantEnergyApi, api), "acct", "entry1")
+    return PastBills(hass, cast(AlliantEnergyApi, api), "acct", "entry1", parse_bill)
 
 
 async def test_past_bills_give_each_billing_cycle_its_marginal_rate(
@@ -249,7 +249,7 @@ async def test_past_bills_reuse_the_latest_bill_already_read(hass: HomeAssistant
     await latest.latest()  # reads INV1
     api.history = [PastBill("INV1", date(2026, 10, 13))]
 
-    past = PastBills(hass, cast(AlliantEnergyApi, api), "acct", "entry1", latest=latest)
+    past = PastBills(hass, cast(AlliantEnergyApi, api), "acct", "entry1", parse_bill, latest=latest)
     rates = await past.marginal_rates(SERVICE_ELECTRIC, date(2026, 9, 1))
 
     assert rates == [MarginalRate(0.15235, date(2027, 1, 6))]
@@ -304,3 +304,24 @@ async def test_bill_history_failure_reads_no_past_bills(hass: HomeAssistant) -> 
     api.history = AlliantEnergyError("HTTP 400")
 
     assert await _past(hass, api).marginal_rates(SERVICE_ELECTRIC, date(2026, 9, 1)) == []
+
+
+async def test_without_a_parser_the_bill_is_the_summary_only(hass: HomeAssistant) -> None:
+    """A utility with no parser for its bill layout never downloads the PDF."""
+    api = FakeApi()
+
+    bill = await LatestBill(hass, cast(AlliantEnergyApi, api), "acct", "entry1", None).latest()
+
+    assert bill.summary == SUMMARY
+    assert bill.itemized is None
+    assert api.downloads == []
+
+
+async def test_without_a_parser_past_bills_are_not_even_listed(hass: HomeAssistant) -> None:
+    api = FakeApi()
+    api.history = [PastBill("INV1", date(2026, 10, 13))]
+    past = PastBills(hass, cast(AlliantEnergyApi, api), "acct", "entry1", None)
+
+    assert await past.marginal_rates(SERVICE_ELECTRIC, date(2026, 9, 1)) == []
+    assert api.history_requests == []
+    assert api.downloads == []
