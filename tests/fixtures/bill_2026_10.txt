@@ -1,0 +1,104 @@
+Please return this portion with your payment.
+Amount Due
+$
+Account Number
+Account Number 1000000001
+Bill Date Feb 07, 2027
+Previous Balance $4.60
+Payment Received -$4.60
+Balance Forward $0.00
+Current Charges $156.14
+Summary of your current charges Amount Due on Feb 27, 2027
+Next Meter Reading: Mar 06, 2027 - Mar 09, 2027 $156.14
+THANK YOU FOR YOUR PAYMENT If paid after Feb 27, 2027 $157.70
+Payment Received Jan 27, 2027 -$4.60
+Total Payments -$4.60
+Your Electric Usage (in kWh)
+1 month of energy use
+This Year
+Avg. Temp 60°F
+Degree Days 157
+Avg. Daily Use This Month = 11.80 kWh
+Residential Electric Service
+Rate: RG1 - Residential Electric Service Billed for: 10 Days
+Billing Meter Current Previous Metered
+Period Number Reading Reading Units Multiplier Usage
+Dec 27 - Jan 06 300000003 41,324 41,206 118 kWh 1 118 kWh
+Energy Charge 118.000 kWhX$0.15847 $18.70
+2027 Fuel Adjustment 118.000 kWhX$0.00 $0.00
+Customer Charge 10.000 DaysX$0.497 $4.97
+State-Wide Low-Income Assistance Fee $0.63
+County Tax $23.67X0.5% (Tax Exempt 100%) $0.00
+Feb 27, 2027 156.14
+Amount enclosed if
+$
+If paid after Feb 27, 2027 $ 157.70
+1000000001
+Account Number Page 2 of 4
+1000000001
+Message Board
+Difficulty paying your bill?
+Scan here.
+Wisconsin Power and Light, an Alliant Energy Company Please recycle
+Message Board:
+Paying by check? Go to alliantenergy.com or call us at 1-800-ALLIANT (800-255-4268) to make a payment with no fee. Paying
+by credit card? Go to alliantenergy.com to make a payment with no fee. You can also use Speedpay by calling 1-877-429-4126 (fees may
+apply).
+Questions about your bill? Our bill guides explain all the parts and pieces. Check them out at alliantenergy.com/understandyourbill
+Your February bill includes a fuel adjustment credit
+of $0.00612 per kilowatt-hour (kWh). This credit
+reflects fuel cost savings identified as part of
+Alliant Energy’s annual review of utility fuel costs.
+Alliant Energy’s investments in renewable energy
+Wisconsin Sales Tax Total Net Difference: $23.67X5% (Tax Exempt 100%) $0.00
+and the efficient operation of its generating
+Total Current Charges $24.30
+facilities are part of our ongoing efforts to provide
+reliable, cost-effective energy. For more
+Your Electric Usage (in kWh)
+information, visit alliantenergy.com/wisconsinrates
+or call us at 1-800-ALLIANT (1-800-255-4268).
+Our commitment to customers. Your reliability
+comes first and you will not pay for system
+improvements needed for new large energy users.
+1 month of energy use Read more about our commitment at
+alliantenergy.com/communitygrowth.
+This Year
+Avg. Temp 60°F
+Degree Days 157
+Avg. Daily Use This Month = 13.29 kWh
+Residential Electric Service
+Rate: RG1 - Residential Electric Service Billed for: 31 Days
+Billing Meter Current Previous Metered
+Period Number Reading Reading Units Multiplier Usage
+Jan 06 - Feb 06 300000003 41,736 41,324 412 kWh 1 412 kWh
+Bill Factor Proration = 19 Days/31 Days = 0.6129032
+Bill Factor Proration = 12 Days/31 Days = 0.3870968
+Energy Charge 412.000 kWhX$0.15847 $65.29
+2027 Fuel Adjustment 412.000 kWhX$0.00 X 0.6129032 $0.00
+2027 Fuel Adjustment 412.000 kWhX$-0.00612 X 0.3870968 -$0.98
+Customer Charge 31.000 DaysX$0.497 $15.41
+State-Wide Low-Income Assistance Fee $2.19
+County Tax $79.72X0.5% (Tax Exempt 100%) $0.00
+Wisconsin Sales Tax $79.72X5% (Tax Exempt 100%) $0.00
+Total Current Charges $81.91
+Account Number Page 3 of 4
+1000000001
+Your Gas Usage (Tiont atlh Neertm Dsif)ference:
+1 month of energy use
+This Year
+Avg. Temp 60°F
+Degree Days 157
+Avg. Daily Use This Month = 1.58 therms
+Residential Gas Service
+Rate: GG1 - Residential Gas Service Billed for: 31 Days
+Billing Meter Current Previous Metered Heat
+Period Number Reading Reading Units Multiplier Factor Usage
+Jan 06 - Feb 06 000000004 3,165 3,118 47 CCF 1 1.04 49therms
+Distribution Charge 49.00 thermsX$0.4123 $20.20
+Gas Supply Base Rate 49.00 thermsX$0.5582 $27.35
+Gas Supply Market Adj 49.00 thermsX$-0.218465 -$10.70
+Customer Charge 31.000 DaysX$0.4218 $13.08
+County Tax $49.93X0.5% (Tax Exempt 100%) $0.00
+Wisconsin Sales Tax $49.93X5% (Tax Exempt 100%) $0.00
+Total Current Charges $49.93

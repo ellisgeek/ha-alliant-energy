@@ -151,7 +151,7 @@ on that URL (following redirects) returns the PDF.
 ### Bill PDF contents
 
 The PDF has exact amounts in cents and per-component rates that the JSON API
-does not expose. Charge lines look like `Energy Charge ... 339.000 kWhX$0.17011`.
+does not expose. Charge lines look like `Energy Charge 412.000 kWhX$0.15847 $65.29`.
 
 | Service | Line | Unit | Used in marginal rate |
 | --- | --- | --- | --- |
@@ -164,8 +164,26 @@ does not expose. Charge lines look like `Energy Charge ... 339.000 kWhX$0.17011`
 | Gas | Gas Supply Market Adj | $/therm (changes, can be negative) | yes |
 | Gas | Customer Charge | $/day | no |
 
-Sections start with "Residential Electric Service" and "Residential Gas
-Service". The PDF also has rate schedule ids, billed days and proration across
-rate changes, cumulative meter register readings, the gas heat factor (CCF to
-therms), average temperature, and degree days. The integration does not use
-these yet.
+Each service section starts with its rate line, for example
+`Rate: RG1 - Residential Electric Service Billed for: 31 Days`. A service can
+have more than one section on a bill (for example a short period when service
+started); the integration uses the section with the latest period. pdfplumber
+can interleave text from side columns (the message board) with the charges, so
+parse one line at a time.
+
+Other lines the integration reads:
+
+| Line | Example | Notes |
+| --- | --- | --- |
+| Bill date | `Bill Date Feb 07, 2027` | Gives the year for the billing period |
+| Next read | `Next Meter Reading: Mar 06, 2027 - Mar 09, 2027` | A window, not a date |
+| Meter, electric | `Jan 06 - Feb 06 <meter> 41,736 41,324 412 kWh 1 412 kWh` | Period (no year), meter, current and previous register, units, multiplier, usage |
+| Meter, gas | `Jan 06 - Feb 06 <meter> 3,165 3,118 47 CCF 1 1.04 49therms` | Adds the heat factor; no space before `therms` |
+| Weather | `Avg. Temp 60°F`, `Degree Days 157` | Per bill, repeated in each section |
+| Proration | `Bill Factor Proration = 19 Days/31 Days = 0.6129032` | When a rate changes mid-period; the newest adjustment line comes last |
+
+`tests/fixtures/bill_2026_10.pdf` is a real bill with personal details
+replaced; usage, meter readings, rates, and dates made up (dollar amounts
+recomputed to match); images and insert pages removed; and metadata cleared.
+`tests/fixtures/bill_2026_10.txt` is its original text layer, changed the same
+way. The examples above come from these fixtures.

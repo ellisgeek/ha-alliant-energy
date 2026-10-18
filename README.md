@@ -22,6 +22,10 @@ history imported on first setup.
 - Sensors for the rate and rate plan of each service: the price per kWh or
   therm the integration uses for cost, and the rate schedule from your bill
   (for example RG1).
+- A projected bill for the billing cycle in progress, and details read from
+  your bill: meter readings, billing period, next meter reading, the monthly
+  fuel and gas supply adjustments, the gas heat factor, and the period's
+  average temperature and degree days.
 - Setup needs only your portal username and password. The integration finds
   your account, premise, and meters for you.
 
@@ -165,6 +169,58 @@ total. The **Current charges** sensor shows the real bill total. See
 marginal rate from the bill PDF), or `billing_cycle` (the latest billing
 cycle's amount divided by its usage). The rate plan and customer charge come
 from the bill PDF, so they are empty if the PDF can't be read.
+
+### Bill sensors
+
+These come from your latest itemized bill PDF and change once per bill. They
+show unknown if the bill can't be read.
+
+| Sensor | State | Attributes |
+| --- | --- | --- |
+| Projected bill | Estimated total for the billing cycle in progress | `electric`, `gas` |
+| Electricity projected cost, Gas projected cost | Estimated cost of each service for the cycle | `usage_to_date`, `cost_to_date`, `days_to_date`, `cycle_days` |
+| Electricity meter reading | Meter register at the last reading, kWh | `meter_number`, `previous_reading`, `read_date` |
+| Gas meter reading | Meter register at the last reading, CCF | `meter_number`, `previous_reading`, `read_date` |
+| Electricity fuel adjustment | $/kWh; changes monthly, can be negative | |
+| Gas supply market adjustment | $/therm; changes monthly, can be negative | |
+| Gas heat factor | Therms per CCF for the last period | |
+| Billing period start, Billing period end | Dates of the last billed period | |
+| Days billed | Length of the last billed period | |
+| Next meter reading | First day of the next reading window | `window_end` |
+| Billing period average temperature | °F over the last billed period | |
+| Billing period degree days | Degree days over the last billed period | |
+
+**How the projection works.** The cycle in progress starts on the last meter
+reading day and is expected to end in the middle of the next reading window.
+The projection takes your average daily use so far, extends it to the whole
+cycle, and prices it at the rate in use. With a fixed rate or the bill's
+marginal rate, it adds the daily customer charge. Fees and taxes are not
+included, so the projection is a little below the real bill. Daily data is
+about two days behind, so the projection starts a few days into each cycle.
+
+**Degree days.** The bill does not say whether these are heating or cooling
+degree days. Alliant appears to use a 65 °F base: a 60 °F average over 31 days
+gives about 155, close to the 157 on the bill. To see how weather-driven your
+gas use is, divide the billed period's gas use by its degree days in a template
+sensor. The period's use is the meter reading minus the previous reading
+(CCF), times the heat factor (therms per CCF):
+
+```yaml
+template:
+  - sensor:
+      - name: Gas use per degree day
+        unit_of_measurement: "thm/DD"
+        state: >
+          {% set reading = states('sensor.alliant_energy_gas_meter_reading') | float(0) %}
+          {% set previous = state_attr('sensor.alliant_energy_gas_meter_reading', 'previous_reading') | float(0) %}
+          {% set factor = states('sensor.alliant_energy_gas_heat_factor') | float(0) %}
+          {% set dd = states('sensor.alliant_energy_billing_period_degree_days') | float(0) %}
+          {{ ((reading - previous) * factor / dd) | round(3) if dd and factor else none }}
+```
+
+For daily rather than per-bill degree days, Home Assistant can calculate them
+from your own outdoor temperature sensor. Use a statistics sensor for the daily
+mean temperature and a template that adds up `max(0, 65 - mean)` each day.
 
 ## Notes and limitations
 
