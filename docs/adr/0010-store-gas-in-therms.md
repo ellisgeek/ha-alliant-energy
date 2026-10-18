@@ -11,10 +11,9 @@ unit.
 ## Consequences
 
 - Version 2026.10.0 stored gas in kWh. The recorder can convert units only for
-  statistics it owns, not for external ones like ours. So when the importer
-  finds a gas statistic stored in kWh, it clears that statistic and imports it
-  again in therms. The statistic id stays the same, so Energy dashboard
-  settings keep working. History older than the backfill window (one year) is
-  lost.
+  statistics it owns, not for external ones like ours. Instead, the one-time
+  full-history rebuild (ADR 0011) clears the statistic and imports it again in
+  therms. The statistic id stays the same, so Energy dashboard settings keep
+  working.
 - Gas and gas cost now use the same unit, so cost is usage times $/therm with
   no conversion step.

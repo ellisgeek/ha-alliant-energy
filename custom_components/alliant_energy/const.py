@@ -21,8 +21,11 @@ CURRENCY_USD = "USD"
 UPDATE_INTERVAL = timedelta(hours=6)
 
 # Long-term statistics (Energy dashboard) settings.
-# Hourly history to backfill on first run, fetched in chunks to stay gentle.
-STATISTICS_BACKFILL_DAYS = 365
+# A meter's first import walks back through the API in chunks until this many
+# chunks in a row come back empty (the start of its history), but never further
+# back than the safety limit.
 STATISTICS_CHUNK_DAYS = 30
+STATISTICS_EMPTY_CHUNKS = 2
+STATISTICS_MAX_HISTORY_DAYS = 3650
 # AMI hourly data lags a couple of days; don't bother requesting the newest days.
 STATISTICS_LAG_DAYS = 1

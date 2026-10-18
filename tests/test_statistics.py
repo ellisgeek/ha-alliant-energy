@@ -1,7 +1,6 @@
 """Tests for long-term statistics import."""
 
-from contextlib import ExitStack
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from functools import partial
 from unittest.mock import AsyncMock, MagicMock, patch
 from zoneinfo import ZoneInfo
@@ -27,12 +26,29 @@ from custom_components.alliant_energy.api import (
     PERIODICITY_HOURLY,
     SERVICE_ELECTRIC,
     SERVICE_GAS,
+    AlliantEnergyError,
     Meter,
     UsageReading,
 )
 from custom_components.alliant_energy.const import DOMAIN
 
 CHICAGO = ZoneInfo("America/Chicago")
+
+# With "now" frozen here, the newest hourly data requested is 2026-10-17 and
+# the backward walk's 30-day chunks are:
+#   C1 09/17-10/17, C2 08/17-09/16, C3 07/17-08/16, C4 06/16-07/16, C5 05/16-06/15
+NOW = "2026-10-18T12:00:00-05:00"
+
+
+@pytest.fixture(autouse=True)
+def _frozen_now(freezer):
+    freezer.move_to(NOW)
+
+
+@pytest.fixture(autouse=True)
+def _no_chunk_delay():
+    with patch.object(stats, "_CHUNK_DELAY", 0):
+        yield
 
 
 def _hourly(reading_date, usage):
@@ -46,6 +62,11 @@ def _hourly(reading_date, usage):
     )
 
 
+def _hours(day, values):
+    """Hourly readings from 00:00 on ``day`` (YYYY-MM-DD), one per value."""
+    return [_hourly(f"{day}T{h:02d}:00:00+01:00", v) for h, v in enumerate(values)]
+
+
 def _monthly(usage, cost, start, end):
     return UsageReading(
         usage=usage,
@@ -57,33 +78,45 @@ def _monthly(usage, cost, start, end):
     )
 
 
-def _api(hourly=None, monthly=None):
-    """API mock routing async_get_usage by periodicity."""
+def _mdy(value: str) -> date:
+    return datetime.strptime(value, "%m/%d/%Y").date()
+
+
+def _api(hourly=None, monthly=None, fail_before=None):
+    """API mock: hourly requests return the readings inside From..To.
+
+    ``fail_before`` makes hourly requests that start before that date raise,
+    like an API that errors for dates before the history begins.
+    """
     api = MagicMock()
 
     async def _get(service, account, premise, meter, frm, to, periodicity=PERIODICITY_HOURLY):
-        return (hourly if periodicity == PERIODICITY_HOURLY else monthly) or []
+        if periodicity != PERIODICITY_HOURLY:
+            return monthly or []
+        if fail_before is not None and _mdy(frm) < fail_before:
+            raise AlliantEnergyError("HTTP 500")
+        return [
+            r
+            for r in hourly or []
+            if _mdy(frm) <= date.fromisoformat(r.reading_date[:10]) <= _mdy(to)
+        ]
 
     api.async_get_usage = AsyncMock(side_effect=_get)
     return api
 
 
-def _hh_from_dates(api) -> list[str]:
-    """The From dates of every hourly usage request made through the mock."""
+def _hh_requests(api) -> list[tuple[str, str]]:
+    """(From, To) of every hourly usage request made through the mock."""
     return [
-        c.args[4]
+        (c.args[4], c.args[5])
         for c in api.async_get_usage.call_args_list
         if c.kwargs.get("periodicity") == PERIODICITY_HOURLY
     ]
 
 
-async def _run_meter(hass, api, meter, rate=None, backfill_days=None) -> None:
+async def _run_meter(hass, api, meter, rate=None) -> None:
     """Import one meter through the real recorder and wait for the writes."""
-    with ExitStack() as stack:
-        stack.enter_context(patch.object(stats, "_CHUNK_DELAY", 0))
-        if backfill_days is not None:
-            stack.enter_context(patch.object(stats, "STATISTICS_BACKFILL_DAYS", backfill_days))
-        await stats._async_update_meter(hass, api, "acct", "P1", meter, CHICAGO, rate)
+    await stats._async_update_meter(hass, api, "acct", "P1", meter, CHICAGO, rate)
     await async_wait_recording_done(hass)
 
 
@@ -121,8 +154,8 @@ def test_parse_hour_localizes_wall_clock_time() -> None:
     assert hour == datetime(2026, 10, 7, 6, 0, tzinfo=UTC)
 
 
-async def test_fetch_hourly_dedups_and_returns_native() -> None:
-    """Returns native values (unconverted), deduped, None-usage skipped."""
+async def test_history_dedups_and_returns_native() -> None:
+    """Native values (unconverted), duplicate hours merged, missing usage skipped."""
     api = _api(
         hourly=[
             _hourly("2026-10-07T00:00:00+01:00", 2.0),
@@ -132,11 +165,50 @@ async def test_fetch_hourly_dedups_and_returns_native() -> None:
         ]
     )
     meter = Meter("G1", "P1", SERVICE_GAS, {})
-    with patch.object(stats, "_CHUNK_DELAY", 0), patch.object(stats, "STATISTICS_BACKFILL_DAYS", 1):
-        rows = await stats._async_fetch_hourly(api, "acct", "P1", meter, CHICAGO)
+    rows = await stats._async_fetch_history(api, "acct", "P1", meter, CHICAGO)
 
-    assert [v for _, v in rows] == [2.0, 3.0]  # native therms, not converted
+    assert [v for _, v in rows] == [2.0, 3.0]
     assert rows[0][0] < rows[1][0]
+
+
+async def test_history_walks_back_until_two_empty_chunks() -> None:
+    """One empty chunk is a gap; two in a row are the start of the history."""
+    api = _api(
+        hourly=[
+            *_hours("2026-10-07", [1.0]),  # C1
+            # C2 is empty: a gap, keep going
+            *_hours("2026-08-01", [2.0]),  # C3
+            # C4 and C5 are empty: stop
+            *_hours("2026-05-01", [9.0]),  # never requested
+        ]
+    )
+    meter = Meter("E1", "P1", SERVICE_ELECTRIC, {})
+    rows = await stats._async_fetch_history(api, "acct", "P1", meter, CHICAGO)
+
+    assert [v for _, v in rows] == [2.0, 1.0]
+    assert _hh_requests(api) == [
+        ("09/17/2026", "10/17/2026"),
+        ("08/17/2026", "09/16/2026"),
+        ("07/17/2026", "08/16/2026"),
+        ("06/16/2026", "07/16/2026"),
+        ("05/16/2026", "06/15/2026"),
+    ]
+
+
+async def test_history_stops_at_an_api_error_once_data_was_found() -> None:
+    """An error for older dates ends the walk; the newer data is kept."""
+    api = _api(hourly=_hours("2026-10-07", [1.0]), fail_before=date(2026, 9, 1))
+    meter = Meter("E1", "P1", SERVICE_ELECTRIC, {})
+    rows = await stats._async_fetch_history(api, "acct", "P1", meter, CHICAGO)
+
+    assert [v for _, v in rows] == [1.0]
+
+
+async def test_history_error_before_any_data_is_raised() -> None:
+    api = _api(hourly=_hours("2026-10-07", [1.0]), fail_before=date(2026, 12, 1))
+    meter = Meter("E1", "P1", SERVICE_ELECTRIC, {})
+    with pytest.raises(AlliantEnergyError):
+        await stats._async_fetch_history(api, "acct", "P1", meter, CHICAGO)
 
 
 async def test_gas_consumption_in_therms_and_sum_continues(hass) -> None:
@@ -144,53 +216,19 @@ async def test_gas_consumption_in_therms_and_sum_continues(hass) -> None:
     meter = Meter("G1", "P1", SERVICE_GAS, {})
     cons_id = stats.statistic_id("acct", meter)
 
-    first = ["2026-10-07T00:00:00+01:00", "2026-10-07T01:00:00+01:00"]
-    await _run_meter(hass, _api(hourly=[_hourly(h, 1.0) for h in first]), meter)
+    await _run_meter(hass, _api(hourly=_hours("2026-10-07", [1.0, 1.0])), meter)
     # The repeated 01:00 hour is skipped.
-    second = ["2026-10-07T01:00:00+01:00", "2026-10-07T02:00:00+01:00"]
-    await _run_meter(hass, _api(hourly=[_hourly(h, 2.0) for h in second]), meter)
+    await _run_meter(hass, _api(hourly=_hours("2026-10-07", [9.0, 1.0, 2.0])), meter)
 
     assert await _rows(hass, cons_id) == pytest.approx([(1.0, 1.0), (1.0, 2.0), (2.0, 4.0)])
     assert await _unit(hass, cons_id) == "thm"
-
-
-async def test_gas_history_in_kwh_is_reimported_in_therms(hass) -> None:
-    """A gas statistic stored in kWh by an earlier version is rebuilt in therms."""
-    meter = Meter("G1", "P1", SERVICE_GAS, {})
-    cons_id = stats.statistic_id("acct", meter)
-    hour = datetime(2026, 10, 7, 5, tzinfo=UTC)
-    async_add_external_statistics(
-        hass,
-        StatisticMetaData(
-            mean_type=StatisticMeanType.NONE,
-            has_sum=True,
-            name="old",
-            source=DOMAIN,
-            statistic_id=cons_id,
-            unit_class="energy",
-            unit_of_measurement="kWh",
-        ),
-        [StatisticData(start=hour, state=29.3001, sum=29.3001)],
-    )
-    await async_wait_recording_done(hass)
-
-    hours = [_hourly(f"2026-10-07T0{h}:00:00+01:00", 1.0) for h in range(3)]
-    api = _api(hourly=hours)
-    await _run_meter(hass, api, meter, backfill_days=40)
-
-    assert await _unit(hass, cons_id) == "thm"
-    assert await _rows(hass, cons_id) == pytest.approx([(1.0, 1.0), (1.0, 2.0), (1.0, 3.0)])
-    assert len(_hh_from_dates(api)) == 2  # the full window was fetched again
 
 
 async def test_effective_electric_cost(hass) -> None:
     """Electric cost uses amount/consumption from the covering billing period."""
     meter = Meter("E1", "P1", SERVICE_ELECTRIC, {})
     api = _api(
-        hourly=[
-            _hourly("2026-10-07T00:00:00+01:00", 4.0),
-            _hourly("2026-10-07T01:00:00+01:00", 6.0),
-        ],
+        hourly=_hours("2026-10-07", [4.0, 6.0]),
         monthly=[
             _monthly(100.0, 25.0, "2026-10-01T00:00:00+01:00", "2026-11-01T00:00:00+01:00")
         ],  # rate 0.25 $/kWh
@@ -209,7 +247,7 @@ async def test_effective_gas_cost(hass) -> None:
     """Gas cost is native therms x the billing period's effective $/therm."""
     meter = Meter("G1", "P1", SERVICE_GAS, {})
     api = _api(
-        hourly=[_hourly("2026-10-07T00:00:00+01:00", 2.0)],  # 2 therms
+        hourly=_hours("2026-10-07", [2.0]),  # 2 therms
         monthly=[_monthly(13.0, 21.0, "2026-10-01T00:00:00+01:00", "2026-11-01T00:00:00+01:00")],
     )
     await _run_meter(hass, api, meter)
@@ -221,37 +259,72 @@ async def test_effective_gas_cost(hass) -> None:
 async def test_static_gas_cost(hass) -> None:
     """A static $/therm rate prices gas on the native therm value."""
     meter = Meter("G1", "P1", SERVICE_GAS, {})
-    api = _api(hourly=[_hourly("2026-10-07T00:00:00+01:00", 3.0)])
-    await _run_meter(hass, api, meter, rate=0.9)
+    await _run_meter(hass, _api(hourly=_hours("2026-10-07", [3.0])), meter, rate=0.9)
 
     cost = await _rows(hass, stats.statistic_id("acct", meter, "_cost"))
     assert cost == pytest.approx([(2.7, 2.7)])
 
 
 async def test_later_runs_fetch_only_from_last_imported_day(hass) -> None:
-    """The first run backfills in chunks; the next run requests one short range."""
+    """The first run walks the history back; the next requests one short range."""
     meter = Meter("E1", "P1", SERVICE_ELECTRIC, {})
-    hours = [_hourly(f"2026-10-07T0{h}:00:00+01:00", 1.0) for h in range(3)]
+    hours = _hours("2026-10-07", [1.0, 1.0, 1.0])
 
     first = _api(hourly=hours)
-    await _run_meter(hass, first, meter, rate=0.2, backfill_days=40)
-    assert len(_hh_from_dates(first)) == 2  # 40 days in 30-day chunks
+    await _run_meter(hass, first, meter, rate=0.2)
+    assert len(_hh_requests(first)) == 3  # C1 with data, then two empty chunks
 
     second = _api(hourly=hours)
-    await _run_meter(hass, second, meter, rate=0.2, backfill_days=40)
-    assert _hh_from_dates(second) == ["10/07/2026"]  # from the last imported day
+    await _run_meter(hass, second, meter, rate=0.2)
+    assert _hh_requests(second) == [("10/07/2026", "10/17/2026")]
 
 
-async def test_new_cost_statistic_is_backfilled(hass) -> None:
-    """When a rate first appears, cost is imported for the whole window."""
+async def test_new_cost_statistic_rebuilds_the_full_history(hass) -> None:
+    """When a rate first appears, the meter is re-imported so cost covers it all."""
     meter = Meter("G1", "P1", SERVICE_GAS, {})
-    hours = [_hourly(f"2026-10-07T0{h}:00:00+01:00", 1.0) for h in range(3)]
+    hours = _hours("2026-10-07", [1.0, 1.0, 1.0])
     cost_id = stats.statistic_id("acct", meter, "_cost")
 
-    await _run_meter(hass, _api(hourly=hours), meter, backfill_days=40)  # no rate
+    await _run_meter(hass, _api(hourly=hours), meter)  # no rate yet
     assert await _rows(hass, cost_id) == []
 
     later = _api(hourly=hours)
-    await _run_meter(hass, later, meter, rate=1.5, backfill_days=40)
-    assert len(_hh_from_dates(later)) == 2  # full window again, for the cost
+    await _run_meter(hass, later, meter, rate=1.5)
+    assert len(_hh_requests(later)) == 3  # full walk again
     assert [state for state, _ in await _rows(hass, cost_id)] == pytest.approx([1.5] * 3)
+    assert await _rows(hass, stats.statistic_id("acct", meter)) == pytest.approx(
+        [(1.0, 1.0), (1.0, 2.0), (1.0, 3.0)]
+    )
+
+
+async def test_statistics_from_an_earlier_version_are_rebuilt_once(hass) -> None:
+    """A gas statistic stored in kWh, without full history, is rebuilt in therms."""
+    meter = Meter("G1", "P1", SERVICE_GAS, {})
+    cons_id = stats.statistic_id("acct", meter)
+    async_add_external_statistics(
+        hass,
+        StatisticMetaData(
+            mean_type=StatisticMeanType.NONE,
+            has_sum=True,
+            name="old",
+            source=DOMAIN,
+            statistic_id=cons_id,
+            unit_class="energy",
+            unit_of_measurement="kWh",
+        ),
+        [StatisticData(start=datetime(2026, 10, 7, 11, tzinfo=UTC), state=29.3001, sum=29.3001)],
+    )
+    await async_wait_recording_done(hass)
+
+    hours = _hours("2026-10-07", [1.0, 1.0, 1.0])
+    rebuild = _api(hourly=hours)
+    await _run_meter(hass, rebuild, meter)
+
+    assert await _unit(hass, cons_id) == "thm"
+    assert await _rows(hass, cons_id) == pytest.approx([(1.0, 1.0), (1.0, 2.0), (1.0, 3.0)])
+    assert len(_hh_requests(rebuild)) == 3  # full walk
+
+    # Only once: the next run is a normal update.
+    after = _api(hourly=hours)
+    await _run_meter(hass, after, meter)
+    assert _hh_requests(after) == [("10/07/2026", "10/17/2026")]

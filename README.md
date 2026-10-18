@@ -4,8 +4,8 @@
 
 A custom Home Assistant integration that reads electricity and gas usage,
 cost, and bills from an [Alliant Energy](https://myaccount.alliantenergy.com/)
-customer account. Hourly usage goes into the Energy dashboard, with a year of
-history imported on first setup.
+customer account. Hourly usage goes into the Energy dashboard, with all the
+history Alliant has imported on first setup.
 
 > **Unofficial.** Alliant publishes no customer API. This integration uses the
 > private backend of Alliant's customer portal, which can change or break
@@ -13,8 +13,8 @@ history imported on first setup.
 
 ## Features
 
-- Hourly electricity and gas usage in the Energy dashboard, with about one year
-  of history imported on first setup.
+- Hourly electricity and gas usage in the Energy dashboard, with all the
+  hourly history Alliant has imported on first setup.
 - Hourly cost for each meter, priced from the rates on your latest bill.
 - Sensors for the latest daily usage, the last bill cost per service, and the
   current bill: amount due, current charges, past due amount, previous balance,
@@ -52,9 +52,11 @@ your Home Assistant configuration directory, then restart Home Assistant.
 2. Enter the username (or email) and password you use for the Alliant portal.
 3. If the login has more than one account, pick the account to add.
 
-The integration then imports about a year of hourly history in the
-background. This takes a few minutes. The statistics do not appear in the
-Energy dashboard pickers until the first import is done.
+The integration then imports all the hourly history Alliant has, going back
+30 days at a time until the data runs out (at most 10 years). This runs in the
+background and takes a few minutes, longer if your account has many years of
+data. The statistics do not appear in the Energy dashboard pickers until the
+first import is done.
 
 ### 2. Add your meters to the Energy dashboard
 
@@ -152,11 +154,11 @@ total. The **Current charges** sensor shows the real bill total. See
 
 ## Notes and limitations
 
-- **Upgrading from 2026.10.0:** that version stored gas in kWh. On the first
-  update after upgrading, the integration deletes the gas usage statistic and
-  imports it again in therms, up to a year back. Your Energy dashboard settings
-  keep working because the statistic id does not change. Gas history older
-  than a year is lost.
+- **Upgrading from 2026.10.0:** that version imported only one year of
+  history and stored gas in kWh. On the first update after upgrading, the
+  integration imports each meter again with all the history Alliant has, and
+  gas in therms. It replaces the old statistics, so your Energy dashboard
+  settings keep working because the statistic ids do not change.
 - **Two-factor sign-in.** If your login has two-factor enabled, the integration
   still works. Alliant enforces it only in the web portal. Each successful
   sign-in may show up as a new device on your account.

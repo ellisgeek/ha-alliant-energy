@@ -106,7 +106,7 @@ The hourly history of one meter's estimated cost, paired with its usage
 statistic.
 
 **Backfill**:
-The first import of up to a year of hourly usage history for a meter.
+The first import of all the hourly usage history Alliant has for a meter.
 _Avoid_: Initial sync, history load
 
 **Two-factor challenge**:
