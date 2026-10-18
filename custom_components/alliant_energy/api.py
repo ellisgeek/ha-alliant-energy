@@ -49,9 +49,9 @@ REQUEST_PAUSE_SECONDS = 0.5
 # Backend service roots, relative to the utility's host. The portal splits its
 # API across several paths; these are the only ones needed for authentication,
 # discovery, and usage.
-_USER_MANAGEMENT = "UsermanagementAPI/api/1/"
-_SCM_SERVICE = "Services/api/1/"
-_USAGE = "UsageAPI/api/V1/"
+_USER_MANAGEMENT_PATH = "UsermanagementAPI/api/1/"
+_SCM_SERVICE_PATH = "Services/api/1/"
+_USAGE_PATH = "UsageAPI/api/V1/"
 
 # Device attributes the portal sends on auth-related calls. Left blank as a
 # generic web client; device-remembering is disabled on Alliant's deployment.
@@ -184,9 +184,9 @@ class AlliantEnergyApi:
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._utility = utility
-        self._user_management = utility.api_root + _USER_MANAGEMENT
-        self._scm_service = utility.api_root + _SCM_SERVICE
-        self._usage = utility.api_root + _USAGE
+        self._user_management = utility.api_root + _USER_MANAGEMENT_PATH
+        self._scm_service = utility.api_root + _SCM_SERVICE_PATH
+        self._usage = utility.api_root + _USAGE_PATH
         self._session = session or AsyncSession(impersonate=IMPERSONATE)
         self._owns_session = session is None
         self._pause = REQUEST_PAUSE_SECONDS if pause is None else pause
@@ -386,7 +386,7 @@ class AlliantEnergyApi:
         """Return the account's bills issued between two dates, newest first."""
         data = await self._request(
             "POST",
-            _SCM_SERVICE + "bill/History",
+            self._scm_service + "bill/History",
             body={
                 "accountNumbers": [account_number],
                 "startDate": start.strftime("%m/%d/%Y"),

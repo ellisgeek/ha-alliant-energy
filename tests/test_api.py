@@ -490,4 +490,6 @@ async def test_bill_history_lists_past_bills_with_their_invoices() -> None:
         "startDate": "01/01/2024",
         "endDate": "10/18/2026",
     }
-    assert session.calls[0]["url"].endswith("bill/History")
+    assert session.calls[0]["url"] == (
+        "https://alliant-svc.smartcmobile.com/Services/api/1/bill/History"
+    )
