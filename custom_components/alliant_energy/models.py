@@ -3,16 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date
 
 from .api import SERVICE_ELECTRIC, SERVICE_GAS, BillSummary
 from .bill import Bill
 from .billparser import ServiceBill
-
-# Where a rate came from, in order of precedence.
-RATE_SOURCE_OPTIONS = "options"  # fixed rate set in the integration options
-RATE_SOURCE_BILL = "bill"  # marginal rate parsed from the latest bill PDF
-RATE_SOURCE_BILLING_CYCLE = "billing_cycle"  # latest cycle's amount / usage
 
 
 @dataclass(frozen=True)
@@ -21,12 +15,11 @@ class ServiceData:
 
     # The latest daily usage reading, in the service's usage unit.
     latest_usage: float | None = None
-    latest_usage_date: date | None = None
     # The amount of the latest billed billing cycle.
     last_bill_cost: float | None = None
     # Cost rate for the newest hour, and where it came from.
     rate: float | None = None  # $/kWh or $/therm
-    rate_source: str | None = None  # one of the RATE_SOURCE_* values
+    rate_source: str | None = None  # one of rates.RATE_SOURCE_*
     # This service's section of the itemized bill, and its adjustment rate.
     section: ServiceBill | None = None
     adjustment: float | None = None  # electric fuel adj. or gas supply market adj., $/unit

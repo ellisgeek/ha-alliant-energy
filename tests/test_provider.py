@@ -169,7 +169,7 @@ async def test_fetch_data_picks_latest_usage_and_bill_cost(hass: HomeAssistant, 
     data = await client.async_fetch_data()
 
     electric, gas = data.services[SERVICE_ELECTRIC], data.services[SERVICE_GAS]
-    assert (electric.latest_usage, electric.latest_usage_date) == (11.0, date(2026, 10, 15))
+    assert electric.latest_usage == 11.0
     assert gas.latest_usage == 4.0
     assert electric.last_bill_cost == 75.0
     assert gas.last_bill_cost is None
@@ -480,3 +480,32 @@ async def test_every_sensor_after_a_full_refresh(hass: HomeAssistant, api, hass_
         "due_date": (date(2026, 11, 2), None, None),
         "invoice_date": (date(2026, 10, 13), None, None),
     }
+
+
+async def test_every_sensor_for_a_gas_only_account_without_a_bill(hass: HomeAssistant, api) -> None:
+    """Electric sensors stay empty and gas sensors read gas, with no bill at all."""
+    client = LocalUtilityClient(hass, _entry(premise_id="P1"))
+    api.async_get_meters.return_value = [Meter("G1", "P1", SERVICE_GAS, {})]
+    api.async_get_usage.side_effect = _usage_router(
+        daily_by_service={SERVICE_GAS: [_daily(2.0, "2026-10-13T00:00:00")]},
+        monthly_by_service={SERVICE_GAS: [_monthly(90.0, "2026-09-11T00:00:00")]},
+    )
+    coordinator = EnergyCoordinator(hass, client.entry, AsyncMock())
+    coordinator.data = await client.async_fetch_data()
+    sensors = {}
+    for description in SENSOR_DESCRIPTIONS:
+        sensor = UtilitySensor(coordinator, description, "e")
+        sensors[description.key] = (
+            sensor.native_value,
+            sensor.native_unit_of_measurement,
+            sensor.extra_state_attributes,
+        )
+    shown = {key: value for key, (value, _unit, _attrs) in sensors.items() if value is not None}
+    assert shown == {"gas_usage": 2.0, "gas_cost": 90.0, "gas_rate": 0.9}
+    assert sensors["gas_usage"][1] == "thm"
+    assert sensors["gas_rate"][1:] == (
+        "USD/thm",
+        {"source": "billing_cycle", "rate_plan": None, "customer_charge_per_day": None},
+    )
+    assert sensors["gas_meter_reading"][1] == "CCF"
+    assert sensors["electricity_meter_reading"][1] == "kWh"

@@ -82,7 +82,7 @@ class ServiceBill:
     meter_number: str | None = None
     meter_reading: float | None = None  # current register reading
     previous_meter_reading: float | None = None
-    meter_unit: str | None = None  # "kWh" or "CCF"
+    meter_unit: str | None = None  # "kWh", "CCF", or "therm"
     heat_factor: float | None = None  # gas: therms per CCF
 
 

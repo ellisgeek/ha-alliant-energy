@@ -248,11 +248,12 @@ mean temperature and a template that adds up `max(0, 65 - mean)` each day.
   integration imports each meter again with all the history Alliant has, and
   gas in therms. It replaces the old statistics, so your Energy dashboard
   settings keep working because the statistic ids do not change.
-- **Gas usage unit:** the gas usage (latest day) sensor now reports Home
-  Assistant's therm unit, `thm`, the same unit as the gas statistics and the
-  gas rate sensors. Earlier versions used `therm`. Home Assistant shows a
-  one-time repair for the changed unit; choose to update the unit of the
-  existing history.
+- **Gas usage unit:** from the release after 2026.10.1, the gas usage (latest
+  day) sensor reports Home Assistant's therm unit, `thm`, the same unit as the
+  gas statistics and the gas rate sensors. Earlier versions used `therm`. Home
+  Assistant then shows a repair about the changed unit, and stops recording
+  long-term statistics for that sensor until you fix it: in **Developer tools >
+  Statistics**, choose to update the unit of the existing history.
 - **Two-factor sign-in.** If your login has two-factor enabled, the integration
   still works. Alliant enforces it only in the web portal. Each successful
   sign-in may show up as a new device on your account.

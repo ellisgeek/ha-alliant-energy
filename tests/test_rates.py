@@ -5,12 +5,10 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from custom_components.alliant_energy.models import (
+from custom_components.alliant_energy.rates import (
     RATE_SOURCE_BILL,
     RATE_SOURCE_BILLING_CYCLE,
     RATE_SOURCE_OPTIONS,
-)
-from custom_components.alliant_energy.rates import (
     BillingCycle,
     KnownRates,
     cost_rate,
