@@ -424,7 +424,7 @@ async def test_every_sensor_after_a_full_refresh(hass: HomeAssistant, api, hass_
 
     assert sensors == {
         "electricity_usage": (12.0, "kWh", None),
-        "gas_usage": (2.0, "therm", None),
+        "gas_usage": (2.0, "thm", None),
         "electricity_cost": (22.0, "USD", None),
         "gas_cost": (90.0, "USD", None),
         "amount_due": (117.74, "USD", None),

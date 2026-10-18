@@ -31,13 +31,13 @@ async def test_usage_sensor_exposes_reading(
 async def test_gas_sensor_reports_therms(
     hass: HomeAssistant, config_entry: MockConfigEntry
 ) -> None:
-    """Gas usage is reported in therms."""
+    """Gas usage is reported in therms, as Home Assistant's unit (thm)."""
     coordinator = EnergyCoordinator(hass, config_entry, AsyncMock())
     coordinator.data = EnergyData(services={"gas": ServiceData(latest_usage=5.0)})
     sensor = UtilitySensor(coordinator, BY_KEY["gas_usage"], "entry-123")
 
     assert sensor.native_value == 5.0
-    assert sensor.native_unit_of_measurement == "therm"
+    assert sensor.native_unit_of_measurement == "thm"
 
 
 async def test_bill_sensors_expose_amount_and_due_date(
@@ -229,3 +229,23 @@ def test_sensor_unique_ids_never_change() -> None:
             "invoice_date",
         ]
     )
+
+
+async def test_meter_reading_unit_follows_the_bill(
+    hass: HomeAssistant, config_entry: MockConfigEntry
+) -> None:
+    """The bill says how the meter registers; without a bill, the usual unit."""
+    coordinator = EnergyCoordinator(hass, config_entry, AsyncMock())
+    coordinator.data = EnergyData(
+        services={"gas": ServiceData(section=ServiceBill(meter_reading=812, meter_unit="therm"))}
+    )
+    assert (
+        UtilitySensor(coordinator, BY_KEY["gas_meter_reading"], "e").native_unit_of_measurement
+        == "thm"
+    )
+
+    coordinator.data = EnergyData()
+    gas = UtilitySensor(coordinator, BY_KEY["gas_meter_reading"], "e")
+    electric = UtilitySensor(coordinator, BY_KEY["electricity_meter_reading"], "e")
+    assert gas.native_unit_of_measurement == "CCF"
+    assert electric.native_unit_of_measurement == "kWh"

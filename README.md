@@ -199,7 +199,7 @@ when a new invoice appears, and kept across restarts.
 | Projected bill | Estimated total for the billing cycle in progress | `electric`, `gas` |
 | Electricity projected cost, Gas projected cost | Estimated cost of each service for the cycle | `usage_to_date`, `cost_to_date`, `days_to_date`, `cycle_days` |
 | Electricity meter reading | Meter register at the last reading, kWh | `meter_number`, `previous_reading`, `read_date` |
-| Gas meter reading | Meter register at the last reading, CCF | `meter_number`, `previous_reading`, `read_date` |
+| Gas meter reading | Meter register at the last reading, in the unit on your bill (usually CCF) | `meter_number`, `previous_reading`, `read_date` |
 | Electricity fuel adjustment | $/kWh; changes monthly, can be negative | |
 | Gas supply market adjustment | $/therm; changes monthly, can be negative | |
 | Gas heat factor | Therms per CCF for the last period | |
@@ -248,6 +248,11 @@ mean temperature and a template that adds up `max(0, 65 - mean)` each day.
   integration imports each meter again with all the history Alliant has, and
   gas in therms. It replaces the old statistics, so your Energy dashboard
   settings keep working because the statistic ids do not change.
+- **Gas usage unit:** the gas usage (latest day) sensor now reports Home
+  Assistant's therm unit, `thm`, the same unit as the gas statistics and the
+  gas rate sensors. Earlier versions used `therm`. Home Assistant shows a
+  one-time repair for the changed unit; choose to update the unit of the
+  existing history.
 - **Two-factor sign-in.** If your login has two-factor enabled, the integration
   still works. Alliant enforces it only in the web portal. Each successful
   sign-in may show up as a new device on your account.

@@ -46,8 +46,7 @@ class _Service:
     service: str
     key: str  # unique id prefix, e.g. "electricity"
     name: str  # e.g. "Electricity"
-    usage_unit: str
-    meter_unit: str
+    meter_unit: str  # how the meter registers when the bill doesn't say
     adjustment_key: str
     adjustment_name: str
 
@@ -56,7 +55,6 @@ _ELECTRIC = _Service(
     SERVICE_ELECTRIC,
     "electricity",
     "Electricity",
-    usage_unit=UnitOfEnergy.KILO_WATT_HOUR,
     meter_unit=UnitOfEnergy.KILO_WATT_HOUR,
     adjustment_key="fuel_adjustment",
     adjustment_name="fuel adjustment",
@@ -65,11 +63,18 @@ _GAS = _Service(
     SERVICE_GAS,
     "gas",
     "Gas",
-    usage_unit="therm",
     meter_unit=UnitOfVolume.CENTUM_CUBIC_FEET,
     adjustment_key="supply_market_adjustment",
     adjustment_name="supply market adjustment",
 )
+
+
+# Home Assistant units for the meter units a bill shows.
+_METER_UNITS: dict[str | None, str] = {
+    "kWh": UnitOfEnergy.KILO_WATT_HOUR,
+    "CCF": UnitOfVolume.CENTUM_CUBIC_FEET,
+    "therm": UnitOfEnergy.THERM,
+}
 
 
 def _section_value(data: EnergyData, service: str, attr: str) -> Any:
@@ -87,7 +92,7 @@ def _service_sensors(svc: _Service) -> tuple[AlliantSensorDescription, ...]:
         AlliantSensorDescription(
             key=f"{svc.key}_usage",
             name=f"{svc.name} usage (latest day)",
-            native_unit_of_measurement=svc.usage_unit,
+            native_unit_of_measurement=USAGE_UNIT[svc.service],
             state_class=SensorStateClass.MEASUREMENT,
             value_fn=lambda data: data.service(s).latest_usage,
         ),
@@ -145,8 +150,10 @@ def _service_sensors(svc: _Service) -> tuple[AlliantSensorDescription, ...]:
         AlliantSensorDescription(
             key=f"{svc.key}_meter_reading",
             name=f"{svc.name} meter reading",
-            native_unit_of_measurement=svc.meter_unit,
             value_fn=lambda data: _section_value(data, s, "meter_reading"),
+            unit_fn=lambda data: _METER_UNITS.get(
+                _section_value(data, s, "meter_unit"), svc.meter_unit
+            ),
             attrs_fn=lambda data: {
                 "meter_number": _section_value(data, s, "meter_number"),
                 "previous_reading": _section_value(data, s, "previous_meter_reading"),
