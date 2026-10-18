@@ -41,7 +41,7 @@ class FakeApi:
 
 
 def _latest(hass: HomeAssistant, api: FakeApi) -> LatestBill:
-    return LatestBill(hass, cast(AlliantEnergyApi, api), "acct", "entry1")
+    return LatestBill(hass, cast(AlliantEnergyApi, api), "acct", "entry1", parse_bill)
 
 
 async def test_latest_bill_has_the_summary_and_the_itemized_pdf(hass: HomeAssistant) -> None:
@@ -161,3 +161,14 @@ async def test_overlapping_reads_download_a_new_pdf_once(hass: HomeAssistant) ->
     await asyncio.gather(latest.latest(), latest.latest())
 
     assert api.downloads == ["INV1"]
+
+
+async def test_without_a_parser_the_bill_is_the_summary_only(hass: HomeAssistant) -> None:
+    """A utility with no parser for its bill layout never downloads the PDF."""
+    api = FakeApi()
+
+    bill = await LatestBill(hass, cast(AlliantEnergyApi, api), "acct", "entry1", None).latest()
+
+    assert bill.summary == SUMMARY
+    assert bill.itemized is None
+    assert api.downloads == []

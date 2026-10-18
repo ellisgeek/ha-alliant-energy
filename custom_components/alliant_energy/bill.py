@@ -2,14 +2,16 @@
 
 The PDF is downloaded and parsed only when a new invoice appears, about once a
 month. The parsed result is saved per config entry, so restarts and reloads
-reuse it. Reading the PDF is best-effort (ADR 0005): when it fails, the bill
-still has its summary.
+reuse it. Reading the PDF is best-effort (ADR 0005): when it fails, or the
+utility has no parser for its bill layout (ADR 0014), the bill still has its
+summary.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -23,7 +25,6 @@ from .billparser import (
     ServiceBill,
     bill_from_dict,
     bill_to_dict,
-    parse_bill,
 )
 from .const import DOMAIN
 
@@ -50,10 +51,16 @@ class LatestBill:
     """The latest bill of one account, for one config entry."""
 
     def __init__(
-        self, hass: HomeAssistant, api: AlliantEnergyApi, account_number: str, entry_id: str
+        self,
+        hass: HomeAssistant,
+        api: AlliantEnergyApi,
+        account_number: str,
+        entry_id: str,
+        parser: Callable[[bytes], ItemizedBill] | None,
     ) -> None:
         self._hass = hass
         self._api = api
+        self._parser = parser
         self._account = account_number
         self._store = _store(hass, entry_id)
         self._loaded = False
@@ -67,8 +74,11 @@ class LatestBill:
 
         Raises the API's errors for the summary. An auth error while reading
         the PDF is raised too; any other PDF failure keeps the last itemized
-        bill read, and the next call tries the new PDF again.
+        bill read, and the next call tries the new PDF again. Without a parser,
+        the PDF is never downloaded.
         """
+        if self._parser is None:
+            return Bill(await self._api.async_get_current_bill(self._account))
         async with self._lock:
             if not self._loaded:
                 await self._async_load_saved()
@@ -79,11 +89,13 @@ class LatestBill:
             return Bill(summary, self._itemized)
 
     async def _async_read_pdf(self, invoice: str) -> None:
+        if self._parser is None:
+            return
         try:
             pdf = await self._api.async_get_bill_pdf(self._account, invoice)
             if not pdf:
                 return
-            self._itemized = await self._hass.async_add_executor_job(parse_bill, pdf)
+            self._itemized = await self._hass.async_add_executor_job(self._parser, pdf)
             self._invoice = invoice
             await self._store.async_save(
                 {

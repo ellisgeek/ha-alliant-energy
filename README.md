@@ -275,6 +275,7 @@ Chrome TLS impersonation.
 | Module | Role |
 | --- | --- |
 | `api.py` | Low-level client: login, token refresh, request signing, request pacing, discovery, usage, bills, bill PDF. No Home Assistant imports. |
+| `utility.py` | The values that belong to Alliant's deployment of the backend: host, utility id, meter types, unit codes, bill parser (ADR 0014). |
 | `usage.py` | Reads a meter's hourly and daily usage and its billing cycles by date range. Hides the backend's request format. |
 | `billparser.py` | Reads the itemized bill from the bill PDF (`pdfplumber`): rates, billing cycle, meter readings. No Home Assistant imports. |
 | `bill.py` | The latest bill: its summary, and its itemized bill, read once per invoice and saved across restarts. |

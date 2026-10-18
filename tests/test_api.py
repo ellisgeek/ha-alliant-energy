@@ -8,6 +8,7 @@ network.
 import asyncio
 import hashlib
 import json
+from dataclasses import replace
 from datetime import date
 from typing import Any
 
@@ -23,6 +24,7 @@ from custom_components.alliant_energy.api import (
     BillSummary,
     _sign,
 )
+from custom_components.alliant_energy.utility import ALLIANT_ENERGY
 
 
 class _FakeResponse:
@@ -54,7 +56,7 @@ class _FakeSession:
 
 def _api(*responses: _FakeResponse) -> tuple[AlliantEnergyApi, _FakeSession]:
     session = _FakeSession(list(responses))
-    return AlliantEnergyApi(session=session), session
+    return AlliantEnergyApi(ALLIANT_ENERGY, session=session), session
 
 
 def test_sign_matches_portal_scheme() -> None:
@@ -92,6 +94,68 @@ async def test_login_stores_tokens_and_signs_request() -> None:
     assert headers["x-signature"] == headers["x-inputchecksum"]
     # The signature covers exactly the bytes sent on the wire.
     assert headers["x-signature"] == _sign(json.loads(session.calls[0]["data"]))
+
+
+async def test_alliant_requests_go_to_its_backend_with_its_headers() -> None:
+    """The values confirmed live for Alliant (docs/backend-api.md)."""
+    api, session = _api(_FakeResponse(200, {"StatusCode": 200, "Result": {}}))
+    api._access_token = "token"  # noqa: SLF001
+
+    await api.async_get_usage(SERVICE_GAS, "acct", "P1", "G1", "09/01/2026", "10/15/2026")
+
+    call = session.calls[0]
+    assert call["url"] == "https://alliant-svc.smartcmobile.com/UsageAPI/api/V1/Gas"
+    assert call["headers"]["uid"] == "1"
+    assert call["headers"]["Origin"] == "https://myaccount.alliantenergy.com"
+    assert call["headers"]["Referer"] == "https://myaccount.alliantenergy.com/Portal/"
+    assert call["params"]["Uom"] == "Therm"
+
+
+async def test_requests_use_the_utilitys_deployment() -> None:
+    """Host, utility id, persona, and codes all come from the utility."""
+    other = replace(
+        ALLIANT_ENERGY,
+        api_host="other-svc.example",
+        portal_url="https://portal.example",
+        utility_id="7",
+        persona_type="3",
+        meter_types={5: SERVICE_GAS},
+        monthly_uom={SERVICE_ELECTRIC: "KWH", SERVICE_GAS: "CCF"},
+    )
+    session = _FakeSession(
+        [
+            _FakeResponse(
+                200,
+                {
+                    "status": {"code": 200},
+                    "data": [
+                        {"meterNumber": "E1", "premiseNumber": "P1", "meterType": 1},
+                        {"meterNumber": "G1", "premiseNumber": "P1", "meterType": 5},
+                    ],
+                },
+            ),
+            _FakeResponse(200, {"StatusCode": 200, "Result": {}}),
+        ]
+    )
+    api = AlliantEnergyApi(other, session=session)
+    api._access_token = "token"  # noqa: SLF001
+
+    meters = await api.async_get_meters("acct", "P1")
+    await api.async_get_usage(
+        SERVICE_GAS, "acct", "P1", "G1", "09/01/2026", "10/15/2026", periodicity="MO"
+    )
+
+    assert [(m.meter_number, m.service_type) for m in meters] == [("G1", SERVICE_GAS)]
+    meters_call, usage_call = session.calls
+    assert (
+        meters_call["url"] == "https://other-svc.example/Services/api/1/Usages/GetMeterAndPremise"
+    )
+    assert meters_call["headers"]["uid"] == "7"
+    assert meters_call["headers"]["Origin"] == "https://portal.example"
+    assert meters_call["headers"]["Referer"] == "https://portal.example/Portal/"
+    assert usage_call["url"] == "https://other-svc.example/UsageAPI/api/V1/Gas"
+    assert usage_call["headers"]["pt"] == "3"
+    assert usage_call["params"]["Uom"] == "CCF"
 
 
 async def test_login_rejects_error_status() -> None:
@@ -305,7 +369,9 @@ def _paced_api(
 ) -> tuple[AlliantEnergyApi, _SlowSession, _FakeTime]:
     time = _FakeTime()
     session = _SlowSession(list(responses), time, latency)
-    api = AlliantEnergyApi(session=session, pause=0.5, sleep=time.sleep, clock=time.clock)
+    api = AlliantEnergyApi(
+        ALLIANT_ENERGY, session=session, pause=0.5, sleep=time.sleep, clock=time.clock
+    )
     api._access_token = "token"
     return api, session, time
 
