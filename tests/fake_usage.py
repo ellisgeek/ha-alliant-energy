@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import date, datetime, tzinfo
 
 from custom_components.alliant_energy.api import AlliantEnergyError, Meter
@@ -34,6 +35,7 @@ class FakeUsage:
 
     async def hourly(self, meter: Meter, start: date, end: date) -> list[tuple[datetime, float]]:
         self.reads.append(("hourly", meter.meter_number, start, end))
+        await asyncio.sleep(0)  # like a request in flight: other tasks run
         if self._fail_before is not None and start < self._fail_before:
             raise AlliantEnergyError("HTTP 500")
         return [
