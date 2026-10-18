@@ -5,6 +5,22 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import date
 
+# Where a rate came from, in order of precedence.
+RATE_SOURCE_OPTIONS = "options"  # fixed rate set in the integration options
+RATE_SOURCE_BILL = "bill"  # marginal rate parsed from the latest bill PDF
+RATE_SOURCE_BILLING_CYCLE = "billing_cycle"  # latest cycle's amount / usage
+
+
+@dataclass(frozen=True)
+class RateInfo:
+    """The rate and rate plan for one service (electric or gas)."""
+
+    rate: float | None = None  # $/kWh or $/therm, as used for cost
+    source: str | None = None  # one of the RATE_SOURCE_* values
+    rate_plan: str | None = None  # rate schedule code from the bill, e.g. "RG1"
+    rate_plan_name: str | None = None
+    customer_charge_per_day: float | None = None
+
 
 @dataclass(frozen=True)
 class EnergyData:
@@ -31,3 +47,6 @@ class EnergyData:
     due_date: date | None = None
     invoice_date: date | None = None
     invoice_id: str | None = None
+
+    # Rate and rate plan per service, keyed by "electric"/"gas".
+    rates: dict[str, RateInfo] = field(default_factory=dict)

@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
+from dataclasses import replace
 from datetime import date, datetime, timedelta
+from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
@@ -26,7 +28,7 @@ from .api import (
     Meter,
     UsageReading,
 )
-from .billparser import RateCard, parse_rate_card
+from .billparser import FuelRate, RateCard, parse_rate_card
 from .const import (
     CONF_ACCOUNT_ID,
     CONF_ELECTRICITY_RATE,
@@ -36,7 +38,13 @@ from .const import (
     CONF_USERNAME,
     CURRENCY_USD,
 )
-from .models import EnergyData
+from .models import (
+    RATE_SOURCE_BILL,
+    RATE_SOURCE_BILLING_CYCLE,
+    RATE_SOURCE_OPTIONS,
+    EnergyData,
+    RateInfo,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -91,44 +99,59 @@ class LocalUtilityClient:
         """
         try:
             premise, meters = await self._async_ensure_context()
-            electric_rate, gas_rate = await self._async_resolve_rates()
+            rates = await self._async_resolve_rates()
             await stats.async_update_statistics(
                 self.hass,
                 self._api,
                 self._account_id,
                 premise,
                 meters,
-                electricity_rate=electric_rate,
-                gas_rate=gas_rate,
+                electricity_rate=rates[SERVICE_ELECTRIC].rate,
+                gas_rate=rates[SERVICE_GAS].rate,
             )
         except AlliantEnergyAuthError:
             self._logged_in = False
             raise
 
-    async def _async_resolve_rates(self) -> tuple[float | None, float | None]:
-        """Resolve the cost rate per fuel.
+    async def _async_resolve_rates(
+        self, current_bill: dict[str, Any] | None = None
+    ) -> dict[str, RateInfo]:
+        """Resolve the cost rate and rate plan per service.
 
-        Precedence: a static rate from options, else the marginal rate parsed
-        from the latest bill PDF, else None (the statistics importer then falls
-        back to an effective rate derived from the bill total).
+        Rate precedence: a static rate from options, else the marginal rate
+        parsed from the latest bill PDF, else None (the statistics importer then
+        falls back to an effective rate per billing cycle). The rate plan comes
+        from the bill PDF.
         """
-        electric = _option_float(self.entry.options.get(CONF_ELECTRICITY_RATE))
-        gas = _option_float(self.entry.options.get(CONF_GAS_RATE))
-        if electric is not None and gas is not None:
-            return electric, gas
+        card = await self._async_ensure_rate_card(current_bill)
+        rates: dict[str, RateInfo] = {}
+        for service, option_key in (
+            (SERVICE_ELECTRIC, CONF_ELECTRICITY_RATE),
+            (SERVICE_GAS, CONF_GAS_RATE),
+        ):
+            fuel: FuelRate | None = None
+            if card is not None:
+                fuel = card.electric if service == SERVICE_ELECTRIC else card.gas
+            rate, source = None, None
+            if (option := _option_float(self.entry.options.get(option_key))) is not None:
+                rate, source = option, RATE_SOURCE_OPTIONS
+            elif fuel is not None:
+                rate, source = fuel.marginal_rate, RATE_SOURCE_BILL
+            rates[service] = RateInfo(
+                rate=rate,
+                source=source,
+                rate_plan=fuel.rate_plan if fuel else None,
+                rate_plan_name=fuel.rate_plan_name if fuel else None,
+                customer_charge_per_day=fuel.customer_charge_per_day if fuel else None,
+            )
+        return rates
 
-        card = await self._async_ensure_rate_card()
-        if card is not None:
-            if electric is None and card.electric is not None:
-                electric = card.electric.marginal_rate
-            if gas is None and card.gas is not None:
-                gas = card.gas.marginal_rate
-        return electric, gas
-
-    async def _async_ensure_rate_card(self) -> RateCard | None:
+    async def _async_ensure_rate_card(
+        self, current_bill: dict[str, Any] | None = None
+    ) -> RateCard | None:
         """Fetch and parse the latest bill PDF, cached per invoice (best-effort)."""
         try:
-            bill = await self._api.async_get_current_bill(self._account_id)
+            bill = current_bill or await self._api.async_get_current_bill(self._account_id)
             invoice = bill.get("invoiceId")
             if not invoice:
                 return self._rate_card
@@ -197,6 +220,15 @@ class LocalUtilityClient:
                 cost[meter.service_type] = bill
 
         current_bill = await self._api.async_get_current_bill(self._account_id)
+        rates = await self._async_resolve_rates(current_bill)
+        # Without a fixed or bill rate, show the latest billing cycle's
+        # effective rate, as the cost statistics use for recent hours.
+        for service, reading in cost.items():
+            info = rates[service]
+            if info.rate is None and reading.cost is not None and reading.usage:
+                rates[service] = replace(
+                    info, rate=reading.cost / reading.usage, source=RATE_SOURCE_BILLING_CYCLE
+                )
 
         electric = latest.get(SERVICE_ELECTRIC)
         gas = latest.get(SERVICE_GAS)
@@ -217,6 +249,7 @@ class LocalUtilityClient:
             due_date=_parse_mdy(current_bill.get("netDueDate")),
             invoice_date=_parse_mdy(current_bill.get("invoiceDate")),
             invoice_id=current_bill.get("invoiceId"),
+            rates=rates,
         )
 
 

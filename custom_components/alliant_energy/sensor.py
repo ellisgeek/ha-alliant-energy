@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date
+from typing import Any
 
 from homeassistant.components.sensor import (
     SensorDeviceClass,
@@ -18,16 +19,41 @@ from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
+from .api import SERVICE_ELECTRIC, SERVICE_GAS
 from .const import DOMAIN
 from .coordinator import AlliantEnergyConfigEntry, EnergyCoordinator
-from .models import EnergyData
+from .models import EnergyData, RateInfo
 
 
 @dataclass(frozen=True, kw_only=True)
 class AlliantSensorDescription(SensorEntityDescription):
     """Describes a sensor and how to read its value from the coordinator data."""
 
-    value_fn: Callable[[EnergyData], float | date | None]
+    value_fn: Callable[[EnergyData], float | date | str | None]
+    # Unit computed from the data (e.g. "USD/kWh"); overrides the static unit.
+    unit_fn: Callable[[EnergyData], str | None] | None = None
+    attrs_fn: Callable[[EnergyData], dict[str, Any]] | None = None
+
+
+def _rate(data: EnergyData, service: str) -> RateInfo:
+    return data.rates.get(service) or RateInfo()
+
+
+def _rate_attrs(data: EnergyData, service: str) -> dict[str, Any]:
+    info = _rate(data, service)
+    return {
+        "source": info.source,
+        "rate_plan": info.rate_plan,
+        "customer_charge_per_day": info.customer_charge_per_day,
+    }
+
+
+def _plan_attrs(data: EnergyData, service: str) -> dict[str, Any]:
+    return {"name": _rate(data, service).rate_plan_name}
+
+
+def _price_unit(data: EnergyData, unit: str) -> str | None:
+    return f"{data.currency}/{unit}" if data.currency else None
 
 
 # These are informational "latest reading" sensors. The data that feeds the
@@ -85,6 +111,38 @@ SENSOR_DESCRIPTIONS: tuple[AlliantSensorDescription, ...] = (
         name="Previous balance",
         device_class=SensorDeviceClass.MONETARY,
         value_fn=lambda data: data.previous_balance,
+    ),
+    # Rate used for cost (options, bill PDF, or latest billing cycle) and the
+    # rate schedule from the bill.
+    AlliantSensorDescription(
+        key="electricity_rate",
+        name="Electricity rate",
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=5,
+        value_fn=lambda data: _rate(data, SERVICE_ELECTRIC).rate,
+        unit_fn=lambda data: _price_unit(data, UnitOfEnergy.KILO_WATT_HOUR),
+        attrs_fn=lambda data: _rate_attrs(data, SERVICE_ELECTRIC),
+    ),
+    AlliantSensorDescription(
+        key="gas_rate",
+        name="Gas rate",
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=5,
+        value_fn=lambda data: _rate(data, SERVICE_GAS).rate,
+        unit_fn=lambda data: _price_unit(data, UnitOfEnergy.THERM),
+        attrs_fn=lambda data: _rate_attrs(data, SERVICE_GAS),
+    ),
+    AlliantSensorDescription(
+        key="electricity_rate_plan",
+        name="Electricity rate plan",
+        value_fn=lambda data: _rate(data, SERVICE_ELECTRIC).rate_plan,
+        attrs_fn=lambda data: _plan_attrs(data, SERVICE_ELECTRIC),
+    ),
+    AlliantSensorDescription(
+        key="gas_rate_plan",
+        name="Gas rate plan",
+        value_fn=lambda data: _rate(data, SERVICE_GAS).rate_plan,
+        attrs_fn=lambda data: _plan_attrs(data, SERVICE_GAS),
     ),
     AlliantSensorDescription(
         key="due_date",
@@ -148,7 +206,11 @@ class UtilitySensor(CoordinatorEntity[EnergyCoordinator], SensorEntity):
         data = self.coordinator.data
         self._attr_native_value = self._description.value_fn(data)
         # Monetary sensors use the utility currency; others use their own unit.
-        if self._description.device_class == SensorDeviceClass.MONETARY:
+        if self._description.unit_fn is not None:
+            self._attr_native_unit_of_measurement = self._description.unit_fn(data)
+        elif self._description.device_class == SensorDeviceClass.MONETARY:
             self._attr_native_unit_of_measurement = data.currency
         else:
             self._attr_native_unit_of_measurement = self._description.native_unit_of_measurement
+        if self._description.attrs_fn is not None:
+            self._attr_extra_state_attributes = self._description.attrs_fn(data)

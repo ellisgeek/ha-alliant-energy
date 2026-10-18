@@ -19,6 +19,9 @@ history imported on first setup.
 - Sensors for the latest daily usage, the last bill cost per service, and the
   current bill: amount due, current charges, past due amount, previous balance,
   due date, and invoice date.
+- Sensors for the rate and rate plan of each service: the price per kWh or
+  therm the integration uses for cost, and the rate schedule from your bill
+  (for example RG1).
 - Setup needs only your portal username and password. The integration finds
   your account, premise, and meters for you.
 
@@ -148,6 +151,20 @@ The marginal rate leaves out fixed charges such as the daily customer charge,
 fees, and taxes. Your Energy dashboard cost is therefore lower than your bill
 total. The **Current charges** sensor shows the real bill total. See
 [ADR 0005](docs/adr/0005-cost-rate-precedence.md) for the reasoning.
+
+### Rate sensors
+
+| Sensor | State | Attributes |
+| --- | --- | --- |
+| Electricity rate | $/kWh used for cost | `source`, `rate_plan`, `customer_charge_per_day` |
+| Gas rate | $/therm used for cost | `source`, `rate_plan`, `customer_charge_per_day` |
+| Electricity rate plan | Rate schedule code, for example `RG1` | `name`, for example "Residential Electric Service" |
+| Gas rate plan | Rate schedule code, for example `GG1` | `name` |
+
+`source` shows which rate is in use: `options` (your fixed rate), `bill` (the
+marginal rate from the bill PDF), or `billing_cycle` (the latest billing
+cycle's amount divided by its usage). The rate plan and customer charge come
+from the bill PDF, so they are empty if the PDF can't be read.
 
 ## Notes and limitations
 

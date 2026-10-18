@@ -14,7 +14,9 @@ from custom_components.alliant_energy.api import (
     Meter,
     UsageReading,
 )
+from custom_components.alliant_energy.billparser import FuelRate, RateCard
 from custom_components.alliant_energy.const import DOMAIN
+from custom_components.alliant_energy.models import RateInfo
 from custom_components.alliant_energy.provider import LocalUtilityClient
 
 
@@ -43,9 +45,26 @@ def api():
         yield instance
 
 
-def _entry(**extra):
+def _entry(options=None, **extra):
     data = {"username": "u", "password": "p", "account_id": "acct-1", **extra}
-    return MockConfigEntry(domain=DOMAIN, data=data)
+    return MockConfigEntry(domain=DOMAIN, data=data, options=options or {})
+
+
+# A parsed bill: marginal rates and rate plans for both services.
+CARD = RateCard(
+    electric=FuelRate(
+        marginal_rate=0.16223,
+        customer_charge_per_day=0.526,
+        rate_plan="RG1",
+        rate_plan_name="Residential Electric Service",
+    ),
+    gas=FuelRate(
+        marginal_rate=0.508107,
+        customer_charge_per_day=0.4603,
+        rate_plan="GG1",
+        rate_plan_name="Residential Gas Service",
+    ),
+)
 
 
 def _daily(usage, date):
@@ -154,3 +173,54 @@ async def test_close_releases_session(hass: HomeAssistant, api) -> None:
     await client.async_close()
 
     api.close.assert_awaited_once()
+
+
+async def test_rates_prefer_options_then_bill(hass: HomeAssistant, api) -> None:
+    """A fixed rate from options wins; otherwise the bill's marginal rate is used."""
+    client = LocalUtilityClient(hass, _entry(options={"electricity_rate": 0.2}, premise_id="P1"))
+    api.async_get_current_bill.return_value = {"invoiceId": "INV1"}
+    api.async_get_bill_pdf.return_value = b"%PDF"
+    with patch("custom_components.alliant_energy.provider.parse_rate_card", return_value=CARD):
+        data = await client.async_fetch_data()
+
+    assert data.rates[SERVICE_ELECTRIC] == RateInfo(
+        rate=0.2,
+        source="options",
+        rate_plan="RG1",
+        rate_plan_name="Residential Electric Service",
+        customer_charge_per_day=0.526,
+    )
+    assert data.rates[SERVICE_GAS].rate == pytest.approx(0.508107)
+    assert data.rates[SERVICE_GAS].source == "bill"
+    assert data.rates[SERVICE_GAS].rate_plan == "GG1"
+    # The bill summary is reused; bill/Current is requested once per refresh.
+    api.async_get_current_bill.assert_awaited_once()
+
+
+async def test_rate_falls_back_to_latest_billing_cycle(hass: HomeAssistant, api) -> None:
+    """Without options or a readable bill, the latest cycle's amount/usage is shown."""
+    client = LocalUtilityClient(hass, _entry(premise_id="P1"))
+    api.async_get_meters.return_value = [Meter("E1", "P1", SERVICE_ELECTRIC, {})]
+    api.async_get_usage.side_effect = _usage_router(
+        daily_by_service={},
+        monthly_by_service={SERVICE_ELECTRIC: [_monthly(22.0, "2026-10-12T00:00:00")]},
+    )
+
+    data = await client.async_fetch_data()
+
+    assert data.rates[SERVICE_ELECTRIC].rate == pytest.approx(0.22)  # $22 / 100 kWh
+    assert data.rates[SERVICE_ELECTRIC].source == "billing_cycle"
+    assert data.rates[SERVICE_ELECTRIC].rate_plan is None
+    assert data.rates[SERVICE_GAS].rate is None
+
+
+async def test_statistics_use_the_resolved_rates(hass: HomeAssistant, api) -> None:
+    client = LocalUtilityClient(hass, _entry(options={"gas_rate": 1.1}, premise_id="P1"))
+    api.async_get_current_bill.return_value = {"invoiceId": "INV1"}
+    api.async_get_bill_pdf.return_value = b"%PDF"
+    with patch("custom_components.alliant_energy.provider.parse_rate_card", return_value=CARD):
+        await client.async_update_statistics()
+
+    kwargs = api.update_statistics.await_args.kwargs
+    assert kwargs["electricity_rate"] == pytest.approx(0.16223)
+    assert kwargs["gas_rate"] == pytest.approx(1.1)

@@ -44,3 +44,12 @@ def test_missing_section_yields_none() -> None:
     card = parse_rate_card_text("nothing useful here")
     assert card.electric is None
     assert card.gas is None
+
+
+def test_parses_rate_plans() -> None:
+    card = parse_rate_card_text(SAMPLE)
+    assert card.electric is not None and card.gas is not None
+    assert card.electric.rate_plan == "RG1"
+    assert card.electric.rate_plan_name == "Residential Electric Service"
+    assert card.gas.rate_plan == "GG1"
+    assert card.gas.rate_plan_name == "Residential Gas Service"

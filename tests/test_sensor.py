@@ -6,7 +6,7 @@ from homeassistant.core import HomeAssistant
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.alliant_energy.coordinator import EnergyCoordinator
-from custom_components.alliant_energy.models import EnergyData
+from custom_components.alliant_energy.models import EnergyData, RateInfo
 from custom_components.alliant_energy.sensor import SENSOR_DESCRIPTIONS, UtilitySensor
 
 
@@ -64,3 +64,44 @@ async def test_cost_sensor_uses_provider_currency(
 
     assert sensor.native_value == 7.25
     assert sensor.native_unit_of_measurement == "USD"
+
+
+async def test_rate_and_rate_plan_sensors(
+    hass: HomeAssistant, config_entry: MockConfigEntry
+) -> None:
+    """Rate sensors show $/unit with their source; plan sensors show the schedule."""
+    coordinator = EnergyCoordinator(hass, config_entry, AsyncMock())
+    coordinator.data = EnergyData(
+        currency="USD",
+        rates={
+            "electric": RateInfo(
+                rate=0.16223,
+                source="bill",
+                rate_plan="RG1",
+                rate_plan_name="Residential Electric Service",
+                customer_charge_per_day=0.526,
+            ),
+            "gas": RateInfo(rate=1.1, source="options"),
+        },
+    )
+    by_key = {d.key: d for d in SENSOR_DESCRIPTIONS}
+
+    electric = UtilitySensor(coordinator, by_key["electricity_rate"], "e")
+    assert electric.native_value == 0.16223
+    assert electric.native_unit_of_measurement == "USD/kWh"
+    assert electric.extra_state_attributes == {
+        "source": "bill",
+        "rate_plan": "RG1",
+        "customer_charge_per_day": 0.526,
+    }
+
+    gas = UtilitySensor(coordinator, by_key["gas_rate"], "e")
+    assert gas.native_value == 1.1
+    assert gas.native_unit_of_measurement == "USD/thm"
+
+    plan = UtilitySensor(coordinator, by_key["electricity_rate_plan"], "e")
+    assert plan.native_value == "RG1"
+    assert plan.extra_state_attributes == {"name": "Residential Electric Service"}
+
+    gas_plan = UtilitySensor(coordinator, by_key["gas_rate_plan"], "e")
+    assert gas_plan.native_value is None  # not on the bill

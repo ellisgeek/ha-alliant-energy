@@ -25,6 +25,8 @@ _LOGGER = logging.getLogger(__name__)
 _KWH_RATE = re.compile(r"kWhX\$(-?\d+(?:\.\d+)?)")
 _THERM_RATE = re.compile(r"thermsX\$(-?\d+(?:\.\d+)?)")
 _DAYS_RATE = re.compile(r"DaysX\$(-?\d+(?:\.\d+)?)")
+# Rate schedule line, e.g. "Rate: RG1 - Residential Electric Service Billed for: 31 Days".
+_RATE_PLAN = re.compile(r"^Rate:\s*(\S+)\s*-\s*(.+?)(?:\s+Billed for:.*)?$")
 
 _ELECTRIC_HEADER = "Residential Electric Service"
 _GAS_HEADER = "Residential Gas Service"
@@ -37,6 +39,8 @@ class FuelRate:
     marginal_rate: float  # $/unit (kWh or therm): usage-proportional components
     customer_charge_per_day: float | None = None
     components: dict[str, float] = field(default_factory=dict)
+    rate_plan: str | None = None  # rate schedule code, e.g. "RG1"
+    rate_plan_name: str | None = None  # e.g. "Residential Electric Service"
 
 
 @dataclass(frozen=True)
@@ -62,6 +66,7 @@ def parse_rate_card_text(text: str) -> RateCard:
     gas_components: dict[str, float] = {}
     electric_customer: float | None = None
     gas_customer: float | None = None
+    plans: dict[str, tuple[str, str]] = {}
     section: str | None = None
 
     for raw_line in text.splitlines():
@@ -71,8 +76,11 @@ def parse_rate_card_text(text: str) -> RateCard:
         elif _GAS_HEADER in line:
             section = "gas"
 
+        # Rate schedule for the current section.
+        if section is not None and (m := _RATE_PLAN.match(line)):
+            plans[section] = (m.group(1), m.group(2).strip())
         # Electric components (unambiguous labels; keep the most recent value).
-        if line.startswith("Energy Charge") and (m := _KWH_RATE.search(line)):
+        elif line.startswith("Energy Charge") and (m := _KWH_RATE.search(line)):
             electric_components["energy_charge"] = float(m.group(1))
         elif "Fuel Adjustment" in line and (m := _KWH_RATE.search(line)):
             electric_components["fuel_adjustment"] = float(m.group(1))
@@ -91,12 +99,16 @@ def parse_rate_card_text(text: str) -> RateCard:
                 electric_customer = float(m.group(1))
 
     electric = _build_fuel_rate(
-        ("energy_charge", "fuel_adjustment"), electric_components, electric_customer
+        ("energy_charge", "fuel_adjustment"),
+        electric_components,
+        electric_customer,
+        plans.get("electric"),
     )
     gas = _build_fuel_rate(
         ("distribution", "supply_base", "supply_market_adj"),
         gas_components,
         gas_customer,
+        plans.get("gas"),
     )
     return RateCard(electric=electric, gas=gas)
 
@@ -105,6 +117,7 @@ def _build_fuel_rate(
     required: tuple[str, ...],
     components: dict[str, float],
     customer_charge: float | None,
+    plan: tuple[str, str] | None,
 ) -> FuelRate | None:
     """Sum the usage-proportional components into a marginal rate.
 
@@ -118,4 +131,6 @@ def _build_fuel_rate(
         marginal_rate=marginal,
         customer_charge_per_day=customer_charge,
         components=dict(components),
+        rate_plan=plan[0] if plan else None,
+        rate_plan_name=plan[1] if plan else None,
     )
