@@ -276,3 +276,6 @@ $RECYCLE.BIN/
 
 # Test results for Codecov (CI)
 junit.xml
+
+# mutmut working copy
+mutants/

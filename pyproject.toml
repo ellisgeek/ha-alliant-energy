@@ -130,3 +130,13 @@ commit_parsers = [
 # rather than a src/ layout, so point the build backend at it directly.
 module-root = ""
 module-name = "custom_components"
+
+[tool.mutmut]
+source_paths = ["custom_components"]
+only_mutate = [
+    "custom_components/alliant_energy/api.py",
+    "custom_components/alliant_energy/billparser.py",
+    "custom_components/alliant_energy/rates.py",
+    "custom_components/alliant_energy/usage.py",
+]
+pytest_add_cli_args = ["-q", "-p", "no:cacheprovider"]
