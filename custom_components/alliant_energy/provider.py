@@ -67,6 +67,7 @@ class LocalUtilityClient:
         self._logged_in = False
         self._usage: AlliantUsage | None = None
         self._context_lock = asyncio.Lock()
+        self._login_rejected: AlliantEnergyAuthError | None = None
         self._bills = LatestBill(hass, self._api, self._account_id, entry.entry_id)
 
     @property
@@ -129,10 +130,18 @@ class LocalUtilityClient:
             return await self._async_ensure_context_locked()
 
     async def _async_ensure_context_locked(self) -> tuple[AlliantUsage, list[Meter]]:
+        if self._login_rejected is not None:
+            # Never retry a rejected password; reauthentication reloads the
+            # entry with a new client (ADR 0007).
+            raise self._login_rejected
         if not self._logged_in:
-            await self._api.async_login(
-                self.entry.data[CONF_USERNAME], self.entry.data[CONF_PASSWORD]
-            )
+            try:
+                await self._api.async_login(
+                    self.entry.data[CONF_USERNAME], self.entry.data[CONF_PASSWORD]
+                )
+            except AlliantEnergyAuthError as err:
+                self._login_rejected = err
+                raise
             self._logged_in = True
         if not self._premise:
             for account in await self._api.async_get_accounts():

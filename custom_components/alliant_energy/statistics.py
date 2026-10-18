@@ -289,7 +289,8 @@ async def _async_record(hass: HomeAssistant, change: Callable[[_Imported], None]
     Imports of several config entries share the store, so a copy read earlier
     must never be saved over another entry's newer records (issue #12).
     """
-    lock: asyncio.Lock = hass.data.setdefault(_STORE_LOCK, asyncio.Lock())
+    if (lock := hass.data.get(_STORE_LOCK)) is None:
+        lock = hass.data[_STORE_LOCK] = asyncio.Lock()
     async with lock:
         imported = await _async_load_imported(hass)
         change(imported)
