@@ -3,7 +3,8 @@
 Imports hourly usage per meter as external statistics with a cumulative sum,
 following the pattern used by the built-in ``opower`` integration: read the last
 imported statistic, continue its running sum, and append new hours. On first run
-it backfills a window of history in gentle chunks.
+it backfills a window of history in gentle chunks; later runs fetch only from
+the last imported day.
 
 Gas is reported by Alliant in therms, which the Energy dashboard does not
 accept, so consumption is stored as energy in kWh (1 therm = 29.3001 kWh, exact).
@@ -18,7 +19,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Callable
 from datetime import datetime, timedelta, tzinfo
+from functools import partial
 
 import homeassistant.util.dt as dt_util
 from homeassistant.components.recorder.models import (
@@ -61,6 +64,8 @@ _RATE_LOOKBACK_DAYS = 400
 
 # A billing period with an effective per-unit rate.
 _RatePeriod = tuple[datetime, datetime, float]
+# A statistic's last imported hour (UTC timestamp) and its running sum.
+_Last = tuple[float, float]
 
 
 def statistic_id(account_number: str, meter: Meter, suffix: str = "") -> str:
@@ -95,9 +100,20 @@ async def _async_update_meter(
     static_rate: float | None,
 ) -> None:
     is_gas = meter.service_type == SERVICE_GAS
+    cons_id = statistic_id(account_number, meter)
+    cost_id = statistic_id(account_number, meter, "_cost")
+
+    rate_for = await _async_rate_fn(api, account_number, premise_number, meter, tz, static_rate)
+    cons_last = await _async_last(hass, cons_id)
+    cost_last = await _async_last(hass, cost_id) if rate_for is not None else None
+
+    # Fetch only what is still missing: from the older of the last imported
+    # hours, or the whole backfill window when a statistic was never imported.
+    lasts = [cons_last, cost_last] if rate_for is not None else [cons_last]
+    since = None if None in lasts else min(last[0] for last in lasts if last is not None)
 
     # Native hourly readings (electric kWh, gas therms).
-    native = await _async_fetch_hourly(api, account_number, premise_number, meter, tz)
+    native = await _async_fetch_hourly(api, account_number, premise_number, meter, tz, since)
     if not native:
         return
 
@@ -105,28 +121,24 @@ async def _async_update_meter(
     consumption = [(hour, value * THERM_TO_KWH if is_gas else value) for hour, value in native]
     await _async_import_series(
         hass,
-        statistic_id(account_number, meter),
         StatisticMetaData(
             mean_type=StatisticMeanType.NONE,
             has_sum=True,
             name=f"Alliant Energy {meter.service_type} {meter.meter_number}",
             source=DOMAIN,
-            statistic_id=statistic_id(account_number, meter),
+            statistic_id=cons_id,
             unit_class=EnergyConverter.UNIT_CLASS,
             unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
         ),
         consumption,
+        cons_last,
     )
 
-    cost = await _async_cost_series(
-        api, account_number, premise_number, meter, tz, native, static_rate
-    )
-    if cost is None:
+    if rate_for is None:
         return
-    cost_id = statistic_id(account_number, meter, "_cost")
+    # Cost is charged on the native unit: kWh x $/kWh, therms x $/therm.
     await _async_import_series(
         hass,
-        cost_id,
         StatisticMetaData(
             mean_type=StatisticMeanType.NONE,
             has_sum=True,
@@ -136,32 +148,30 @@ async def _async_update_meter(
             unit_class=None,
             unit_of_measurement=None,
         ),
-        cost,
+        [(hour, value * rate_for(hour)) for hour, value in native],
+        cost_last,
     )
 
 
-async def _async_cost_series(
+async def _async_rate_fn(
     api: AlliantEnergyApi,
     account_number: str,
     premise_number: str,
     meter: Meter,
     tz: tzinfo,
-    native: list[tuple[datetime, float]],
     static_rate: float | None,
-) -> list[tuple[datetime, float]] | None:
-    """Return hourly (hour, cost) points, or None when no rate is available.
+) -> Callable[[datetime], float] | None:
+    """Return the $/unit rate for an hour, or None when no rate is available.
 
-    Cost is charged on the native unit: electric kWh x $/kWh, gas therms x
-    $/therm. The effective rate per billing period comes from the monthly bill
-    (amount / consumption) for both fuels; a static rate from options overrides
-    it.
+    A static rate (from options or the bill PDF) wins; otherwise each hour uses
+    the effective rate of its billing period (amount / consumption).
     """
     if static_rate is not None:
-        return [(hour, value * static_rate) for hour, value in native]
+        return lambda _hour: static_rate
     periods = await _async_rate_periods(api, account_number, premise_number, meter, tz)
     if not periods:
         return None
-    return [(hour, value * _rate_for(periods, hour)) for hour, value in native]
+    return partial(_rate_for, periods)
 
 
 async def _async_rate_periods(
@@ -209,23 +219,25 @@ def _rate_for(periods: list[_RatePeriod], hour: datetime) -> float:
     return periods[-1][2]
 
 
-async def _async_import_series(
-    hass: HomeAssistant,
-    stat_id: str,
-    metadata: StatisticMetaData,
-    points: list[tuple[datetime, float]],
-) -> None:
-    """Append (hour, value) points to a statistic, continuing its running sum."""
+async def _async_last(hass: HomeAssistant, stat_id: str) -> _Last | None:
+    """Return the last imported hour (UTC timestamp) and running sum, if any."""
     last = await get_instance(hass).async_add_executor_job(
         get_last_statistics, hass, 1, stat_id, True, {"sum"}
     )
-    if last.get(stat_id):
-        row = last[stat_id][0]
-        last_ts: float | None = row["start"]
-        running_sum: float = row.get("sum") or 0.0
-    else:
-        last_ts = None
-        running_sum = 0.0
+    if not last.get(stat_id):
+        return None
+    row = last[stat_id][0]
+    return row["start"], row.get("sum") or 0.0
+
+
+async def _async_import_series(
+    hass: HomeAssistant,
+    metadata: StatisticMetaData,
+    points: list[tuple[datetime, float]],
+    last: _Last | None,
+) -> None:
+    """Append (hour, value) points after ``last``, continuing its running sum."""
+    last_ts, running_sum = last if last is not None else (None, 0.0)
 
     statistics: list[StatisticData] = []
     for hour, value in points:
@@ -235,7 +247,7 @@ async def _async_import_series(
         statistics.append(StatisticData(start=hour, state=value, sum=running_sum))
 
     if statistics:
-        _LOGGER.debug("Adding %d statistics for %s", len(statistics), stat_id)
+        _LOGGER.debug("Adding %d statistics for %s", len(statistics), metadata["statistic_id"])
         async_add_external_statistics(hass, metadata, statistics)
 
 
@@ -245,14 +257,19 @@ async def _async_fetch_hourly(
     premise_number: str,
     meter: Meter,
     tz: tzinfo,
+    since: float | None = None,
 ) -> list[tuple[datetime, float]]:
-    """Fetch hourly readings across the backfill window in chunks.
+    """Fetch hourly readings in chunks, from ``since`` or the backfill window.
 
-    Returns a sorted list of (UTC hour, native value) with the meter's native
-    unit (electric kWh, gas therms). Duplicate hours across chunk boundaries are
-    de-duplicated.
+    ``since`` is the last imported hour (UTC timestamp); fetching restarts at
+    its local date so a partly reported day is completed. Without it, the whole
+    backfill window is fetched. Returns a sorted list of (UTC hour, native
+    value) in the meter's native unit (electric kWh, gas therms). Duplicate
+    hours across chunk boundaries are de-duplicated.
     """
     start_date = (dt_util.now(tz) - timedelta(days=STATISTICS_BACKFILL_DAYS)).date()
+    if since is not None:
+        start_date = max(start_date, datetime.fromtimestamp(since, tz).date())
     end_date = (dt_util.now(tz) - timedelta(days=STATISTICS_LAG_DAYS)).date()
 
     by_hour: dict[datetime, float] = {}
