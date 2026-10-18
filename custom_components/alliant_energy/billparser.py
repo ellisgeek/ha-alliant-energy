@@ -100,12 +100,14 @@ class ItemizedBill:
 
     def section(self, service: str) -> ServiceBill | None:
         """One service's section (SERVICE_ELECTRIC or SERVICE_GAS), if billed."""
-        return self.electric if service == SERVICE_ELECTRIC else self.gas
+        return {SERVICE_ELECTRIC: self.electric, SERVICE_GAS: self.gas}.get(service)
 
     def adjustment(self, service: str) -> float | None:
         """The service's adjustment rate: fuel (electric) or supply market (gas)."""
         section = self.section(service)
-        return section.components.get(_ADJUSTMENT_COMPONENT[service]) if section else None
+        if section is None:
+            return None
+        return section.components.get(_ADJUSTMENT_COMPONENT[service])
 
 
 def parse_bill(pdf_bytes: bytes) -> ItemizedBill:

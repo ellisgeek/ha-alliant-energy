@@ -22,6 +22,7 @@ from .api import (
     AlliantEnergyApi,
     AlliantEnergyAuthError,
     AlliantEnergyError,
+    BillSummary,
     Meter,
 )
 from .bill import Bill, LatestBill
@@ -93,12 +94,14 @@ class LocalUtilityClient:
         try:
             usage, meters = await self._async_ensure_context()
             try:
-                bill: Bill | None = await self._bills.latest()
+                bill = await self._bills.latest()
             except AlliantEnergyAuthError:
                 raise
-            except Exception as err:  # noqa: BLE001 - import without the marginal rate
-                _LOGGER.warning("Could not read the latest bill: %s", err)
-                bill = None
+            except Exception as err:  # noqa: BLE001 - keep pricing with the last bill read
+                # Imported cost keeps its rate for good (ADR 0012), so keep the
+                # marginal rate from the itemized bill already read.
+                _LOGGER.warning("Could not fetch the bill summary: %s", err)
+                bill = Bill(BillSummary(), await self._bills.last_read())
             await stats.async_update_statistics(
                 self.hass,
                 usage,
@@ -111,14 +114,14 @@ class LocalUtilityClient:
             self._logged_in = False
             raise
 
-    def _known_rates(self, bill: Bill | None) -> dict[str, KnownRates]:
-        """Each service's static rate (options) and marginal rate (bill PDF)."""
+    def _known_rates(self, bill: Bill) -> dict[str, KnownRates]:
+        """Each service's static rate (options) and marginal rate (itemized bill)."""
         known: dict[str, KnownRates] = {}
         for service, option_key in (
             (SERVICE_ELECTRIC, CONF_ELECTRICITY_RATE),
             (SERVICE_GAS, CONF_GAS_RATE),
         ):
-            section = bill.section(service) if bill else None
+            section = bill.section(service)
             known[service] = KnownRates(
                 static=_option_float(self.entry.options.get(option_key)),
                 marginal=section.marginal_rate if section else None,
@@ -132,14 +135,14 @@ class LocalUtilityClient:
         services: dict[str, ServiceData] = {}
         for service in (SERVICE_ELECTRIC, SERVICE_GAS):
             section = bill.section(service)
-            if section is None or bill.itemized is None:
+            if section is None:
                 services[service] = ServiceData()
                 continue
             services[service] = ServiceData(
                 rate_plan=section.rate_plan,
                 rate_plan_name=section.rate_plan_name,
                 customer_charge_per_day=section.customer_charge_per_day,
-                adjustment=bill.itemized.adjustment(service),
+                adjustment=bill.adjustment(service),
                 meter_number=section.meter_number,
                 meter_reading=section.meter_reading,
                 previous_meter_reading=section.previous_meter_reading,

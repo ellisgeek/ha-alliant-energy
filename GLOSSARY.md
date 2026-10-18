@@ -62,15 +62,15 @@ _Avoid_: Statement
 **Invoice**:
 The identifier of one bill, used to retrieve its itemized PDF.
 
+**Bill summary**:
+The headline figures of the most recent bill: amount due, current charges,
+past due amount, previous balance, due date, and invoice date.
+
 **Itemized bill**:
 What a bill's PDF says: each service's charges, rates, billing cycle, and
 meter readings, plus the next meter reading window and the weather. A bill has
 a bill summary and, when its PDF can be read, an itemized bill.
 _Avoid_: Bill PDF (for the parsed content), statement
-
-**Bill summary**:
-The headline figures of the most recent bill: amount due, current charges,
-past due amount, previous balance, due date, and invoice date.
 
 **Rate schedule**:
 The published tariff a service is billed under (for example RG-1 for

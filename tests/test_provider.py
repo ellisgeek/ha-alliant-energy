@@ -12,6 +12,7 @@ from custom_components.alliant_energy.api import (
     SERVICE_ELECTRIC,
     SERVICE_GAS,
     Account,
+    AlliantEnergyError,
     BillSummary,
     Meter,
     UsageReading,
@@ -349,3 +350,26 @@ async def test_bill_details_and_projection(hass: HomeAssistant, api, hass_storag
     assert data.next_meter_read_start == date(2026, 11, 9)
     assert data.average_temperature == 60
     assert data.degree_days == 157
+
+
+async def test_statistics_keep_the_saved_marginal_rate_when_the_bill_summary_fails(
+    hass: HomeAssistant, api, hass_storage
+) -> None:
+    """Imported cost keeps its rate for good (ADR 0012), so the saved bill still counts."""
+    client = LocalUtilityClient(hass, _entry(premise_id="P1"))
+    _with_bill(api, hass_storage, client)
+    api.async_get_current_bill.side_effect = AlliantEnergyError("HTTP 500")
+
+    await client.async_update_statistics()
+
+    rates = api.update_statistics.await_args.kwargs["rates"]
+    assert rates[SERVICE_ELECTRIC].marginal == pytest.approx(0.16223)
+    assert rates[SERVICE_ELECTRIC].marginal_from == date(2026, 9, 11)
+
+
+async def test_sensor_refresh_fails_when_the_bill_summary_fails(hass: HomeAssistant, api) -> None:
+    client = LocalUtilityClient(hass, _entry(premise_id="P1"))
+    api.async_get_current_bill.side_effect = AlliantEnergyError("HTTP 500")
+
+    with pytest.raises(AlliantEnergyError):
+        await client.async_fetch_data()

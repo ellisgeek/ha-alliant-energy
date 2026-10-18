@@ -1,5 +1,6 @@
 """Tests for reading the latest bill: its summary and, when readable, its itemized PDF."""
 
+import asyncio
 from datetime import date
 from pathlib import Path
 from typing import cast
@@ -15,7 +16,7 @@ from custom_components.alliant_energy.api import (
     BillSummary,
 )
 from custom_components.alliant_energy.bill import LatestBill, async_forget_bill
-from custom_components.alliant_energy.billparser import parse_bill
+from custom_components.alliant_energy.billparser import PARSER_VERSION, bill_to_dict, parse_bill
 
 PDF = (Path(__file__).parent / "fixtures" / "bill_2026_10.pdf").read_bytes()
 SUMMARY = BillSummary(amount_due=97.12, due_date=date(2026, 11, 3), invoice_id="INV1")
@@ -113,3 +114,63 @@ async def test_forgetting_the_bill_removes_the_saved_copy(
     await async_forget_bill(hass, "entry1")
 
     assert "alliant_energy.bill.entry1" not in hass_storage
+
+
+async def test_unreadable_pdf_of_a_new_invoice_keeps_the_last_itemized_bill(
+    hass: HomeAssistant,
+) -> None:
+    """The last itemized bill stays until the new PDF is read; the next call retries it."""
+    api = FakeApi()
+    latest = _latest(hass, api)
+    await latest.latest()
+
+    api.summary = BillSummary(invoice_id="INV2")
+    api.pdf = AlliantEnergyError("HTTP 500")
+    bill = await latest.latest()
+    assert bill.summary.invoice_id == "INV2"
+    assert bill.itemized == parse_bill(PDF)
+
+    api.pdf = PDF
+    await latest.latest()
+    assert api.downloads == ["INV1", "INV2", "INV2"]
+
+
+async def test_empty_pdf_reads_nothing(hass: HomeAssistant, hass_storage) -> None:
+    bill = await _latest(hass, FakeApi(pdf=None)).latest()
+
+    assert bill.itemized is None
+    assert "alliant_energy.bill.entry1" not in hass_storage
+
+
+async def test_saved_bill_format(hass: HomeAssistant, hass_storage) -> None:
+    """Earlier versions read this format; keep it stable."""
+    await _latest(hass, FakeApi()).latest()
+
+    assert hass_storage["alliant_energy.bill.entry1"]["data"] == {
+        "parser_version": PARSER_VERSION,
+        "invoice_id": "INV1",
+        "bill": bill_to_dict(parse_bill(PDF)),
+    }
+
+
+async def test_overlapping_reads_download_a_new_pdf_once(hass: HomeAssistant) -> None:
+    """The sensor refresh and the statistics import can ask at the same time."""
+    api = FakeApi()
+    latest = _latest(hass, api)
+
+    await asyncio.gather(latest.latest(), latest.latest())
+
+    assert api.downloads == ["INV1"]
+
+
+async def test_last_read_gives_the_saved_itemized_bill_without_a_request(
+    hass: HomeAssistant,
+) -> None:
+    api = FakeApi()
+    await _latest(hass, api).latest()
+
+    class Unreachable(FakeApi):
+        async def async_get_current_bill(self, account_number: str) -> BillSummary:
+            raise AssertionError("no request expected")
+
+    assert await _latest(hass, Unreachable()).last_read() == parse_bill(PDF)

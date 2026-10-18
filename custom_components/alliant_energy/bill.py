@@ -8,6 +8,7 @@ still has its summary.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass
 from typing import Any
@@ -40,6 +41,10 @@ class Bill:
         """One service's section of the itemized bill, if there is one."""
         return self.itemized.section(service) if self.itemized else None
 
+    def adjustment(self, service: str) -> float | None:
+        """One service's adjustment rate from the itemized bill, if there is one."""
+        return self.itemized.adjustment(service) if self.itemized else None
+
 
 class LatestBill:
     """The latest bill of one account, for one config entry."""
@@ -54,21 +59,31 @@ class LatestBill:
         self._loaded = False
         self._itemized: ItemizedBill | None = None
         self._invoice: str | None = None
+        # One read at a time, so overlapping callers download a new PDF once.
+        self._lock = asyncio.Lock()
 
     async def latest(self) -> Bill:
         """Fetch the bill summary, and read the PDF if the invoice is new.
 
         Raises the API's errors for the summary. An auth error while reading
         the PDF is raised too; any other PDF failure keeps the last itemized
-        bill read.
+        bill read, and the next call tries the new PDF again.
         """
-        if not self._loaded:
-            await self._async_load_saved()
-        summary = await self._api.async_get_current_bill(self._account)
-        invoice = summary.invoice_id
-        if invoice and invoice != self._invoice:
-            await self._async_read_pdf(invoice)
-        return Bill(summary, self._itemized)
+        async with self._lock:
+            if not self._loaded:
+                await self._async_load_saved()
+            summary = await self._api.async_get_current_bill(self._account)
+            invoice = summary.invoice_id
+            if invoice and invoice != self._invoice:
+                await self._async_read_pdf(invoice)
+            return Bill(summary, self._itemized)
+
+    async def last_read(self) -> ItemizedBill | None:
+        """The last itemized bill read (saved across restarts), without a request."""
+        async with self._lock:
+            if not self._loaded:
+                await self._async_load_saved()
+            return self._itemized
 
     async def _async_read_pdf(self, invoice: str) -> None:
         try:
