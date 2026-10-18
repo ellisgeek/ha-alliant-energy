@@ -61,7 +61,9 @@ push = false
 [tool.git-cliff.changelog]
 # Keep a Changelog 1.1.0 (https://keepachangelog.com/en/1.1.0/), generated from
 # Conventional Commits. Only user-facing changes are listed; docs, test, build,
-# ci, and refactor commits are left out unless marked breaking.
+# ci, and refactor commits are left out unless marked breaking. A breaking
+# change's BREAKING CHANGE footer is printed under its entry, to tell users
+# what to do.
 header = """# Changelog
 
 All notable changes to this project will be documented in this file.
@@ -80,6 +82,9 @@ body = """
 ### {{ group | striptags | trim }}
 {% for commit in commits %}
 - {% if commit.breaking %}**Breaking:** {% endif %}{{ commit.message | split(pat="\n") | first | trim | upper_first }}\
+{% if commit.breaking and commit.breaking_description and commit.breaking_description | trim != commit.message | split(pat="\n") | first | trim %}
+  - {{ commit.breaking_description | trim | upper_first }}\
+{% endif %}\
 {% endfor %}
 {% endfor %}
 """
