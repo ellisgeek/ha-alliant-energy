@@ -122,11 +122,11 @@ class AlliantUsage:
     async def _get(
         self, meter: Meter, start: date, end: date, periodicity: str, chunk_days: int
     ) -> list[UsageReading]:
-        """Readings from ``start`` through ``end``, at most ``chunk_days`` per request."""
+        """Readings from ``start`` through ``end``, at most ``chunk_days`` days per request."""
         readings: list[UsageReading] = []
         chunk_start = start
         while chunk_start <= end:
-            chunk_end = min(chunk_start + timedelta(days=chunk_days), end)
+            chunk_end = min(chunk_start + timedelta(days=chunk_days - 1), end)
             # One request at a time, each at least ``pause`` after the previous
             # one ended, even when reads overlap.
             async with self._lock:

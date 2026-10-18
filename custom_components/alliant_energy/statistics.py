@@ -400,7 +400,7 @@ async def _async_fetch_history(
     by_hour: dict[datetime, float] = {}
     empty = 0
     while chunk_end >= oldest and empty < STATISTICS_EMPTY_CHUNKS:
-        chunk_start = max(chunk_end - timedelta(days=STATISTICS_CHUNK_DAYS), oldest)
+        chunk_start = max(chunk_end - timedelta(days=STATISTICS_CHUNK_DAYS - 1), oldest)
         try:
             hours = await usage.hourly(meter, chunk_start, chunk_end)
         except AlliantEnergyAuthError:

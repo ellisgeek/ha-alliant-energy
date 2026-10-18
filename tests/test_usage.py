@@ -103,14 +103,15 @@ def _ranges(api: FakeApi) -> list[tuple[str, str]]:
 
 
 async def test_hourly_splits_long_ranges_into_30_day_requests() -> None:
+    """Each request covers at most 30 days, both ends included."""
     api = FakeApi()
 
     await _usage(api).hourly(METER, date(2026, 8, 1), date(2026, 10, 7))
 
     assert _ranges(api) == [
-        ("08/01/2026", "08/31/2026"),
-        ("09/01/2026", "10/01/2026"),
-        ("10/02/2026", "10/07/2026"),
+        ("08/01/2026", "08/30/2026"),
+        ("08/31/2026", "09/29/2026"),
+        ("09/30/2026", "10/07/2026"),
     ]
 
 
@@ -193,9 +194,9 @@ async def test_billing_cycles_from_yearly_requests_without_duplicates() -> None:
     ]
     assert {r["periodicity"] for r in api.requests} == {PERIODICITY_MONTHLY}
     assert _ranges(api) == [
-        ("10/01/2024", "10/01/2025"),
-        ("10/02/2025", "10/02/2026"),
-        ("10/03/2026", "10/18/2026"),
+        ("10/01/2024", "09/30/2025"),
+        ("10/01/2025", "09/30/2026"),
+        ("10/01/2026", "10/18/2026"),
     ]
 
 
