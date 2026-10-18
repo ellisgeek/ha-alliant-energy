@@ -48,7 +48,12 @@ class FakeUsage:
 
     async def billing_cycles(self, meter: Meter, start: date, end: date) -> list[BillingCycle]:
         self.reads.append(("billing_cycles", meter.meter_number, start, end))
-        return list(self._cycles)
+        return [
+            cycle
+            for cycle in self._cycles
+            if cycle.start.astimezone(self._tz).date() <= end
+            and cycle.end.astimezone(self._tz).date() >= start
+        ]
 
     def ranges(self, read: str) -> list[tuple[str, str]]:
         """The (start, end) of every read of one kind, as MM/DD/YYYY strings."""

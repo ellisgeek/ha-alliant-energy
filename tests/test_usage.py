@@ -1,5 +1,6 @@
 """Tests for reading usage through the Alliant backend adapter."""
 
+import asyncio
 from datetime import UTC, date, datetime
 from typing import cast
 from zoneinfo import ZoneInfo
@@ -12,6 +13,7 @@ from custom_components.alliant_energy.api import (
     PERIODICITY_MONTHLY,
     SERVICE_ELECTRIC,
     AlliantEnergyApi,
+    AlliantEnergyError,
     Meter,
     UsageReading,
 )
@@ -23,14 +25,30 @@ METER = Meter("E1", "P1", SERVICE_ELECTRIC, {})
 
 
 class FakeApi:
-    """Answers usage requests from canned readings and records each request."""
+    """Answers usage requests from canned readings and records each request.
 
-    def __init__(self, readings: list[UsageReading] | None = None) -> None:
+    With a ``time``, each request takes ``latency`` seconds on that clock and
+    yields while in flight, like a real network request.
+    """
+
+    def __init__(
+        self,
+        readings: list[UsageReading] | None = None,
+        time: FakeTime | None = None,
+        latency: float = 0.0,
+    ) -> None:
         self.readings = readings or []
         self.requests: list[dict] = []
+        self.sent_at: list[float] = []
+        self._time = time
+        self._latency = latency
 
     async def async_get_usage(self, **request) -> list[UsageReading]:
         self.requests.append(request)
+        if self._time is not None:
+            self.sent_at.append(self._time.now)
+            await asyncio.sleep(0)  # in flight: let other reads run
+            self._time.now += self._latency
         return self.readings
 
 
@@ -179,3 +197,55 @@ async def test_billing_cycles_from_yearly_requests_without_duplicates() -> None:
         ("10/02/2025", "10/02/2026"),
         ("10/03/2026", "10/18/2026"),
     ]
+
+
+def _paced(api: FakeApi, time: FakeTime) -> AlliantUsage:
+    return AlliantUsage(
+        cast(AlliantEnergyApi, api), "acct", "P1", CHICAGO, 0.5, time.sleep, time.clock
+    )
+
+
+async def test_pause_runs_from_the_end_of_the_previous_request() -> None:
+    """A slow request still leaves the full pause before the next one."""
+    time = FakeTime()
+    api = FakeApi(time=time, latency=0.8)
+
+    await _paced(api, time).hourly(METER, date(2026, 8, 1), date(2026, 9, 15))  # two requests
+
+    assert api.sent_at[1] - api.sent_at[0] == pytest.approx(0.8 + 0.5)
+
+
+async def test_concurrent_reads_never_send_requests_together() -> None:
+    """The sensor refresh and the statistics import share one paced reader."""
+    time = FakeTime()
+    api = FakeApi(time=time, latency=0.8)
+    usage = _paced(api, time)
+
+    await asyncio.gather(
+        usage.hourly(METER, date(2026, 10, 1), date(2026, 10, 2)),
+        usage.daily(METER, date(2026, 10, 1), date(2026, 10, 2)),
+    )
+
+    assert api.sent_at[1] - api.sent_at[0] == pytest.approx(0.8 + 0.5)
+
+
+async def test_hour_returned_by_two_requests_is_counted_once() -> None:
+    api = FakeApi([_reading("2026-08-31T00:00:00+01:00", 2.0)])  # every request returns it
+
+    hours = await _usage(api).hourly(METER, date(2026, 8, 1), date(2026, 9, 15))
+
+    assert len(api.requests) == 2
+    assert hours == [(datetime(2026, 8, 31, 5, tzinfo=UTC), 2.0)]
+
+
+async def test_error_in_a_later_request_fails_the_whole_read() -> None:
+    """Backend errors pass through unchanged; a partial read is not returned."""
+
+    class FailsSecond(FakeApi):
+        async def async_get_usage(self, **request) -> list[UsageReading]:
+            if self.requests:
+                raise AlliantEnergyError("HTTP 500")
+            return await super().async_get_usage(**request)
+
+    with pytest.raises(AlliantEnergyError):
+        await _usage(FailsSecond()).hourly(METER, date(2026, 8, 1), date(2026, 9, 15))

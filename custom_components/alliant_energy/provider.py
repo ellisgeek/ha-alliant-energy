@@ -219,8 +219,7 @@ class LocalUtilityClient:
         if self._meters is None:
             self._meters = await self._api.async_get_meters(self._account_id, self._premise)
         if self._usage is None:
-            tz = dt_util.get_default_time_zone()
-            self._usage = AlliantUsage(self._api, self._account_id, self._premise, tz)
+            self._usage = AlliantUsage(self._api, self._account_id, self._premise)
         return self._usage, self._meters
 
     async def _async_build_energy_data(

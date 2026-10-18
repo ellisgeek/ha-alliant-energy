@@ -1,6 +1,6 @@
 """Tests for long-term statistics import."""
 
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from functools import partial
 from zoneinfo import ZoneInfo
 
@@ -468,3 +468,23 @@ async def test_reprice_covers_new_hours_and_happens_once(hass, caplog) -> None:
     assert [v for row in await _rows(hass, cost_id) for v in row] == pytest.approx(
         [0.2, 0.2, 0.4, 0.6, 0.6, 1.2]
     )
+
+
+async def test_billing_cycles_cover_the_oldest_hour_on_a_full_import(hass) -> None:
+    """A full import reads cycles back to its oldest hour; updates look back 400 days."""
+    meter = Meter("E1", "P1", SERVICE_ELECTRIC, {})
+    # One hour every 20 days for 500 days: every 30-day chunk of the walk has data.
+    hours = [
+        hour
+        for back in range(25)
+        for hour in _hours((date(2026, 10, 7) - timedelta(days=20 * back)).isoformat(), [1.0])
+    ]
+    first = _usage(hourly=hours)
+    await _run_meter(hass, first, meter)
+
+    oldest = (date(2026, 10, 7) - timedelta(days=20 * 24)).strftime("%m/%d/%Y")
+    assert first.ranges("billing_cycles") == [(oldest, "10/18/2026")]
+
+    later = _usage(hourly=hours)
+    await _run_meter(hass, later, meter)
+    assert later.ranges("billing_cycles") == [("09/13/2025", "10/18/2026")]

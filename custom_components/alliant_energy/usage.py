@@ -53,8 +53,9 @@ class MeterUsage(Protocol):
 class AlliantUsage:
     """Usage readings from the Alliant backend for one account and premise.
 
-    Requests are paced: each waits until ``pause`` seconds have passed since
-    the previous one, across every read (ADR 0007).
+    Requests are paced: one at a time, each ``pause`` seconds after the
+    previous one ended, across every read (ADR 0007). Timestamps are parsed in
+    ``tz``, or in Home Assistant's time zone at the time of each read.
     """
 
     def __init__(
@@ -62,7 +63,7 @@ class AlliantUsage:
         api: AlliantEnergyApi,
         account_number: str,
         premise_number: str,
-        tz: tzinfo,
+        tz: tzinfo | None = None,
         pause: float | None = None,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         clock: Callable[[], float] = time.monotonic,
@@ -75,6 +76,11 @@ class AlliantUsage:
         self._sleep = sleep
         self._clock = clock
         self._last_request: float | None = None
+        self._lock = asyncio.Lock()
+
+    @property
+    def _zone(self) -> tzinfo:
+        return self._tz or dt_util.get_default_time_zone()
 
     async def hourly(self, meter: Meter, start: date, end: date) -> Hours:
         by_hour: dict[datetime, float] = {}
@@ -83,7 +89,7 @@ class AlliantUsage:
         ):
             if reading.usage is None:
                 continue
-            if (hour := _parse_hour(reading.reading_date, self._tz)) is not None:
+            if (hour := _parse_hour(reading.reading_date, self._zone)) is not None:
                 by_hour[hour] = reading.usage
         return sorted(by_hour.items())
 
@@ -91,6 +97,8 @@ class AlliantUsage:
         by_day: dict[date, float] = {}
         for reading in await self._get(meter, start, end, PERIODICITY_DAILY, _LONG_CHUNK_DAYS):
             if reading.usage is None or not reading.reading_date:
+                continue
+            if reading.reading_date.startswith("0001"):  # the API's "no date"
                 continue
             try:
                 by_day[date.fromisoformat(reading.reading_date[:10])] = reading.usage
@@ -101,8 +109,9 @@ class AlliantUsage:
     async def billing_cycles(self, meter: Meter, start: date, end: date) -> list[BillingCycle]:
         cycles: dict[datetime, BillingCycle] = {}  # by start: a cycle can span two requests
         for reading in await self._get(meter, start, end, PERIODICITY_MONTHLY, _LONG_CHUNK_DAYS):
-            cycle_start = _parse_hour(reading.reading_from, self._tz)
-            cycle_end = _parse_hour(reading.reading_to, self._tz)
+            tz = self._zone
+            cycle_start = _parse_hour(reading.reading_from, tz)
+            cycle_end = _parse_hour(reading.reading_to, tz)
             if cycle_start is None or cycle_end is None or cycle_start >= cycle_end:
                 continue
             if reading.usage is None:
@@ -118,27 +127,29 @@ class AlliantUsage:
         chunk_start = start
         while chunk_start <= end:
             chunk_end = min(chunk_start + timedelta(days=chunk_days), end)
-            await self._wait_for_pause()
-            readings.extend(
-                await self._api.async_get_usage(
-                    service_type=meter.service_type,
-                    account_number=self._account,
-                    premise_number=self._premise,
-                    meter_number=meter.meter_number,
-                    from_date=chunk_start.strftime(_DATE_FMT),
-                    to_date=chunk_end.strftime(_DATE_FMT),
-                    periodicity=periodicity,
-                )
-            )
+            # One request at a time, each at least ``pause`` after the previous
+            # one ended, even when reads overlap.
+            async with self._lock:
+                if self._last_request is not None:
+                    wait = self._pause - (self._clock() - self._last_request)
+                    if wait > 0:
+                        await self._sleep(wait)
+                try:
+                    readings.extend(
+                        await self._api.async_get_usage(
+                            service_type=meter.service_type,
+                            account_number=self._account,
+                            premise_number=self._premise,
+                            meter_number=meter.meter_number,
+                            from_date=chunk_start.strftime(_DATE_FMT),
+                            to_date=chunk_end.strftime(_DATE_FMT),
+                            periodicity=periodicity,
+                        )
+                    )
+                finally:
+                    self._last_request = self._clock()
             chunk_start = chunk_end + timedelta(days=1)
         return readings
-
-    async def _wait_for_pause(self) -> None:
-        if self._last_request is not None:
-            wait = self._pause - (self._clock() - self._last_request)
-            if wait > 0:
-                await self._sleep(wait)
-        self._last_request = self._clock()
 
 
 def _parse_hour(reading_date: str | None, tz: tzinfo) -> datetime | None:
