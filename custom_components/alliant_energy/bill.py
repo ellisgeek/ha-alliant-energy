@@ -124,8 +124,10 @@ class LatestBill:
             saved = await self._store.async_load()
             if not saved or saved.get("parser_version") != PARSER_VERSION:
                 return
-            self._itemized = bill_from_dict(saved["bill"])
-            self._invoice = saved["invoice_id"]
+            # Both or neither: a bill that cannot be matched to an invoice is
+            # never served.
+            itemized, invoice = bill_from_dict(saved["bill"]), saved["invoice_id"]
+            self._itemized, self._invoice = itemized, invoice
         except Exception as err:  # noqa: BLE001 - a bad cache just means a new download
             _LOGGER.debug("Ignoring the saved bill: %s", err)
 

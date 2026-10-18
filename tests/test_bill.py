@@ -393,3 +393,19 @@ async def test_corrupt_saved_past_bills_are_read_again(hass: HomeAssistant, hass
 
     assert rates == [MarginalRate(0.15235, date(2027, 1, 6))]
     assert api.downloads == ["INV1"]
+
+
+async def test_half_valid_saved_bill_is_not_served_when_the_new_pdf_fails(
+    hass: HomeAssistant, hass_storage
+) -> None:
+    """A saved bill without its invoice cannot be matched to a summary: ignore it."""
+    hass_storage["alliant_energy.bill.entry1"] = {
+        "version": 1,
+        "key": "alliant_energy.bill.entry1",
+        "data": {"parser_version": PARSER_VERSION, "bill": bill_to_dict(parse_bill(PDF))},
+    }
+
+    bill = await _latest(hass, FakeApi(pdf=AlliantEnergyError("HTTP 500"))).latest()
+
+    assert bill.summary == SUMMARY
+    assert bill.itemized is None
