@@ -507,6 +507,37 @@ async def test_every_sensor_for_a_gas_only_account_without_a_bill(hass: HomeAssi
     assert sensors["electricity_meter_reading"][1] == "kWh"
 
 
+async def test_expired_token_in_fetch_data_relogs_in(hass: HomeAssistant, api) -> None:
+    """An auth error from a usage API call re-logs in automatically without reauth."""
+    client = LocalUtilityClient(hass, _entry(premise_id="P1"))
+    api.async_get_meters.return_value = [Meter("E1", "P1", SERVICE_ELECTRIC, {})]
+    # First usage call fails (token expired); after re-login the remaining succeed.
+    api.async_get_usage.side_effect = [AlliantEnergyAuthError("token expired"), [], []]
+
+    data = await client.async_fetch_data()
+
+    assert data is not None
+
+
+async def test_expired_token_in_update_statistics_relogs_in(hass: HomeAssistant, api) -> None:
+    """An auth error from the statistics import completes silently after re-login."""
+    client = LocalUtilityClient(hass, _entry(premise_id="P1"))
+    api.update_statistics.side_effect = [AlliantEnergyAuthError("token expired"), None]
+
+    await client.async_update_statistics(Bill(BillSummary()))  # must not raise
+
+
+async def test_bad_credentials_are_not_retried(hass: HomeAssistant, api) -> None:
+    """Login failure (bad password) does not trigger a retry (ADR 0007)."""
+    api.async_login.side_effect = AlliantEnergyAuthError("invalid credentials")
+    client = LocalUtilityClient(hass, _entry(premise_id="P1"))
+
+    with pytest.raises(AlliantEnergyAuthError):
+        await client.async_fetch_data()
+
+    api.async_login.assert_awaited_once()
+
+
 async def test_overlapping_updates_log_in_once(hass: HomeAssistant, api) -> None:
     """Each login is recorded as a device on the account (ADR 0007)."""
 
