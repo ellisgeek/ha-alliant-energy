@@ -6,6 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project uses calendar versioning, `YYYY.M.MICRO`, like Home Assistant
 (see [ADR 0009](docs/adr/0009-calendar-versioning.md)).
 
+## [2026.11.0] - 2026-11-07
+
+### Added
+
+- Price each billing cycle at its own bill's marginal rate
+- Fetch Alliant's own usage projection (#20) (#25)
+
+### Fixed
+
+- Close the session when a flow is abandoned
+- Ignore a saved bill that is missing its invoice
+- Re-login automatically on token expiry (#23) (#24)
+
+### Security
+
+- Update certifi, homeassistant, and uv in lock file (#26)
+
 ## [2026.10.2] - 2026-10-18
 
 ### Fixed
@@ -43,6 +60,7 @@ and this project uses calendar versioning, `YYYY.M.MICRO`, like Home Assistant
 
 - Declare recorder as a dependency
 
+[2026.11.0]: https://github.com/ellisgeek/ha-alliant-energy/compare/2026.10.2...2026.11.0
 [2026.10.2]: https://github.com/ellisgeek/ha-alliant-energy/compare/2026.10.1...2026.10.2
 [2026.10.1]: https://github.com/ellisgeek/ha-alliant-energy/compare/2026.10.0...2026.10.1
 [2026.10.0]: https://github.com/ellisgeek/ha-alliant-energy/releases/tag/2026.10.0

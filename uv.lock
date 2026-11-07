@@ -1207,7 +1207,7 @@ wheels = [
 
 [[package]]
 name = "ha-alliant-energy"
-version = "2026.10.2"
+version = "2026.11.0"
 source = { editable = "." }
 
 [package.dev-dependencies]
