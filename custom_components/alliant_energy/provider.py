@@ -24,6 +24,7 @@ from .api import (
     AlliantEnergyAuthError,
     AlliantEnergyError,
     Meter,
+    Projection,
 )
 from .bill import Bill, LatestBill, PastBills
 from .billparser import ItemizedBill, ServiceBill
@@ -185,6 +186,7 @@ class LocalUtilityClient:
         daily_by_service: dict[str, list[tuple[date, float]]] = {}
         cycles_by_service: dict[str, list[BillingCycle]] = {}
         cost: dict[str, float] = {}
+        meter_by_service: dict[str, Meter] = {}
         for meter in meters:
             daily = await usage.daily(meter, today - timedelta(days=_LOOKBACK_DAYS), today)
             daily_by_service[meter.service_type] = daily
@@ -198,10 +200,15 @@ class LocalUtilityClient:
             # The newest billed cycle; a cycle at 0 is not billed yet.
             if billed := [cycle.cost for cycle in cycles if cycle.cost]:
                 cost[meter.service_type] = billed[-1]
+            meter_by_service[meter.service_type] = meter
 
         bill = await self._bills.latest()
         known_rates = self._known_rates(bill)
         tz = dt_util.get_default_time_zone()
+
+        # Fetch Alliant's own projection for each service (ADR 0007: one per service).
+        projections = await self._async_fetch_projections(meter_by_service, today)
+
         services: dict[str, ServiceData] = {}
         for service in (SERVICE_ELECTRIC, SERVICE_GAS):
             latest_day = latest.get(service)
@@ -215,6 +222,7 @@ class LocalUtilityClient:
                 rate_source=source,
                 section=bill.section(service),
                 adjustment=bill.adjustment(service),
+                alliant_projection=projections.get(service),
             )
             # Project the cost of the billing cycle in progress.
             section = data.section
@@ -233,6 +241,27 @@ class LocalUtilityClient:
             currency=CURRENCY_USD,
             projected_bill=round(sum(projected), 2) if projected else None,
         )
+
+    async def _async_fetch_projections(
+        self, meter_by_service: dict[str, Meter], today: date
+    ) -> dict[str, Projection]:
+        """Fetch Alliant's projection for each service meter (one request each)."""
+        assert self._premise is not None
+        month_start = today.replace(day=1)
+        next_month = (month_start + timedelta(days=32)).replace(day=1)
+        projections: dict[str, Projection] = {}
+        for service, meter in meter_by_service.items():
+            projection = await self._api.async_get_projection(
+                service_type=service,
+                account_number=self._account_id,
+                premise_number=self._premise,
+                meter_number=meter.meter_number,
+                start=month_start,
+                end=next_month,
+            )
+            if projection is not None:
+                projections[service] = projection
+        return projections
 
 
 def _to_float(value: object) -> float | None:

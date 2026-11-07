@@ -171,6 +171,10 @@ async def test_bill_detail_sensors(hass: HomeAssistant, config_entry: MockConfig
         "cost_to_date": 6.44,
         "days_to_date": 3,
         "cycle_days": 29,
+        "alliant_projected_usage": None,
+        "alliant_projected_cost": None,
+        "alliant_so_far_usage": None,
+        "alliant_so_far_cost": None,
     }
 
     meter = sensor("electricity_meter_reading")
@@ -210,6 +214,10 @@ def test_sensor_unique_ids_never_change() -> None:
             "projected_bill",
             "electricity_projected_cost",
             "gas_projected_cost",
+            "electricity_typical_monthly_cost",
+            "gas_typical_monthly_cost",
+            "electricity_typical_monthly_usage",
+            "gas_typical_monthly_usage",
             "electricity_rate",
             "gas_rate",
             "electricity_rate_plan",

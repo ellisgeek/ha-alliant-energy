@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from .api import SERVICE_ELECTRIC, SERVICE_GAS, BillSummary
+from .api import SERVICE_ELECTRIC, SERVICE_GAS, BillSummary, Projection
 from .bill import Bill
 from .billparser import ServiceBill
 
@@ -23,12 +23,14 @@ class ServiceData:
     # This service's section of the itemized bill, and its adjustment rate.
     section: ServiceBill | None = None
     adjustment: float | None = None  # electric fuel adj. or gas supply market adj., $/unit
-    # Projection for the billing cycle in progress.
+    # Projection for the billing cycle in progress (our own estimate).
     usage_to_date: float | None = None
     days_to_date: int | None = None  # days of usage data in the cycle so far
     cycle_days: int | None = None  # expected length of the cycle
     cost_to_date: float | None = None
     projected_cost: float | None = None
+    # Alliant's own projection for the current calendar month.
+    alliant_projection: Projection | None = None
 
 
 @dataclass(frozen=True)
