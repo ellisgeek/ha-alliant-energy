@@ -12,6 +12,7 @@ jobs:
   hacs:
     name: HACS
     runs-on: ubuntu-latest
+    permissions: {}
     steps:
       - uses: hacs/action@main
         with:
@@ -20,6 +21,8 @@ jobs:
   hassfest:
     name: Hassfest
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v5
       - uses: home-assistant/actions/hassfest@master
