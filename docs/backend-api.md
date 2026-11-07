@@ -147,6 +147,41 @@ Records are in `Result.electricUsages` or `Result.gasUsages`:
 
 Hourly data lags about two days. A 7-day `HH` request returns about 162 hours.
 
+## Projection (unconfirmed)
+
+**`GET UsageAPI/api/V1/ProjectedElectric`** and **`GET UsageAPI/api/V1/ProjectedGas`**
+
+Alliant's own projection for the current calendar month. `ProjectedGas` is the
+obvious name for the gas equivalent; it has not been confirmed. These endpoints
+were observed in [detour1999/ha-alliant-energy](https://github.com/detour1999/ha-alliant-energy)
+but have not yet been verified against a live Alliant account by this integration.
+
+| Parameter | Value |
+| --- | --- |
+| `AccountNumber` | `"{premiseNumber}-{accountNumber}"` (same format as usage) |
+| `MeterNumber` | from `GetMeterAndPremise` |
+| `StartDate`, `EndDate` | First of this month and first of next month. Date format unconfirmed; this integration uses `MM/DD/YYYY` to match the rest of the usage API. |
+| `Type` | `"0"` (purpose unknown; other values untested) |
+
+The other integration uses `YYYY-MM-DD` for dates, but the rest of the usage
+API takes `MM/DD/YYYY`; the right format needs live confirmation.
+
+Response is `{"StatusCode": 200, "Result": {"projectedElectric": {...}}}` (or
+`projectedGas` for gas). Fields inside:
+
+| Field | Meaning |
+| --- | --- |
+| `soFarThisMonthProjectedConsumption` | Month-to-date usage |
+| `soFarThisMonthProjectedAmount` | Month-to-date cost |
+| `projectedConsumption` | Projected usage for the full month |
+| `projectedAmount` | Projected cost for the full month |
+| `averageThisYearConsumption` | Average monthly usage this year |
+| `averageThisYearAmount` | Average monthly cost this year |
+
+An amount of `0` means the data is not yet available for the account; treat it
+as absent. The period appears to be the **calendar month**, not the billing
+cycle; this needs live confirmation.
+
 ## Bills
 
 **`POST Services/api/1/bill/Current`** with `{"accountNumbers": [...]}` returns

@@ -113,7 +113,37 @@ def _service_sensors(svc: _Service) -> tuple[AlliantSensorDescription, ...]:
                 "cost_to_date": data.service(s).cost_to_date,
                 "days_to_date": data.service(s).days_to_date,
                 "cycle_days": data.service(s).cycle_days,
+                "alliant_projected_usage": (
+                    p.projected_consumption if (p := data.service(s).alliant_projection) else None
+                ),
+                "alliant_projected_cost": (
+                    p.projected_amount if (p := data.service(s).alliant_projection) else None
+                ),
+                "alliant_so_far_usage": (
+                    p.so_far_consumption if (p := data.service(s).alliant_projection) else None
+                ),
+                "alliant_so_far_cost": (
+                    p.so_far_amount if (p := data.service(s).alliant_projection) else None
+                ),
             },
+        ),
+        AlliantSensorDescription(
+            key=f"{svc.key}_typical_monthly_cost",
+            name=f"{svc.name} typical monthly cost",
+            device_class=SensorDeviceClass.MONETARY,
+            suggested_display_precision=2,
+            value_fn=lambda data: (
+                p.average_year_amount if (p := data.service(s).alliant_projection) else None
+            ),
+        ),
+        AlliantSensorDescription(
+            key=f"{svc.key}_typical_monthly_usage",
+            name=f"{svc.name} typical monthly usage",
+            native_unit_of_measurement=USAGE_UNIT[svc.service],
+            state_class=SensorStateClass.MEASUREMENT,
+            value_fn=lambda data: (
+                p.average_year_consumption if (p := data.service(s).alliant_projection) else None
+            ),
         ),
         # Rate used for cost (options, bill PDF, or latest billing cycle) and
         # the rate schedule from the bill.

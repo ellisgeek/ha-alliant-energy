@@ -659,3 +659,136 @@ async def test_non_auth_envelope_error_is_an_api_error() -> None:
         await api.async_get_current_bill("acct")
 
     assert not isinstance(err.value, AlliantEnergyAuthError)
+
+
+async def test_get_projection_parses_electric_fields() -> None:
+    """Electric projection reads the six fields from Result.projectedElectric."""
+    from datetime import date as _date
+
+    from custom_components.alliant_energy.api import Projection
+
+    api, session = _api(
+        _FakeResponse(
+            200,
+            {
+                "StatusCode": 200,
+                "Result": {
+                    "projectedElectric": {
+                        "soFarThisMonthProjectedConsumption": 310.5,
+                        "soFarThisMonthProjectedAmount": 48.20,
+                        "projectedConsumption": 620.0,
+                        "projectedAmount": 95.00,
+                        "averageThisYearConsumption": 580.0,
+                        "averageThisYearAmount": 89.50,
+                    }
+                },
+            },
+        )
+    )
+    api._access_token = "token"  # noqa: SLF001
+
+    result = await api.async_get_projection(
+        SERVICE_ELECTRIC,
+        "1000000001",
+        "2000000002",
+        "E1",
+        _date(2026, 11, 1),
+        _date(2026, 12, 1),
+    )
+
+    assert result == Projection(
+        so_far_consumption=310.5,
+        so_far_amount=48.20,
+        projected_consumption=620.0,
+        projected_amount=95.00,
+        average_year_consumption=580.0,
+        average_year_amount=89.50,
+    )
+    call = session.calls[0]
+    assert "ProjectedElectric" in call["url"]
+    assert call["params"]["AccountNumber"] == "2000000002-1000000001"
+    assert call["params"]["StartDate"] == "11/01/2026"
+    assert call["params"]["EndDate"] == "12/01/2026"
+    assert call["params"]["Type"] == "0"
+    assert call["headers"]["pt"] == "1"
+
+
+async def test_get_projection_treats_zero_amounts_as_unavailable() -> None:
+    """Amounts of 0 mean the backend has no data yet; they become None."""
+    from datetime import date as _date
+
+    api, _ = _api(
+        _FakeResponse(
+            200,
+            {
+                "StatusCode": 200,
+                "Result": {
+                    "projectedElectric": {
+                        "soFarThisMonthProjectedConsumption": 310.5,
+                        "soFarThisMonthProjectedAmount": 0,
+                        "projectedConsumption": 0,
+                        "projectedAmount": 0,
+                        "averageThisYearConsumption": 580.0,
+                        "averageThisYearAmount": 0,
+                    }
+                },
+            },
+        )
+    )
+    api._access_token = "token"  # noqa: SLF001
+
+    result = await api.async_get_projection(
+        SERVICE_ELECTRIC,
+        "acct",
+        "P1",
+        "E1",
+        _date(2026, 11, 1),
+        _date(2026, 12, 1),
+    )
+
+    assert result is not None
+    assert result.so_far_consumption == 310.5
+    assert result.so_far_amount is None
+    assert result.projected_consumption is None
+    assert result.projected_amount is None
+    assert result.average_year_consumption == 580.0
+    assert result.average_year_amount is None
+
+
+async def test_get_projection_returns_none_on_api_error() -> None:
+    """API errors (endpoint not found, HTTP 500, etc.) yield None, not an exception."""
+    from datetime import date as _date
+
+    api, _ = _api(_FakeResponse(500, {}))
+    api._access_token = "token"  # noqa: SLF001
+
+    result = await api.async_get_projection(
+        SERVICE_ELECTRIC,
+        "acct",
+        "P1",
+        "E1",
+        _date(2026, 11, 1),
+        _date(2026, 12, 1),
+    )
+
+    assert result is None
+
+
+async def test_get_projection_returns_none_for_unknown_service() -> None:
+    """An unrecognized service type returns None without hitting the network."""
+    from datetime import date as _date
+
+    api, session = _api()
+    api._access_token = "token"  # noqa: SLF001
+
+    result = await api.async_get_projection(
+        "steam",
+        "acct",
+        "P1",
+        "M1",
+        _date(2026, 11, 1),
+        _date(2026, 12, 1),
+    )
+
+    assert result is None
+    assert session.calls == []

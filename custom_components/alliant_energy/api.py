@@ -131,6 +131,22 @@ class UsageReading:
 
 
 @dataclass(frozen=True)
+class Projection:
+    """Alliant's own projection for the current calendar month.
+
+    Returned by ProjectedElectric / ProjectedGas (see docs/backend-api.md).
+    Fields are None when the backend reports 0 (not yet available for the account).
+    """
+
+    so_far_consumption: float | None = None
+    so_far_amount: float | None = None
+    projected_consumption: float | None = None
+    projected_amount: float | None = None
+    average_year_consumption: float | None = None
+    average_year_amount: float | None = None
+
+
+@dataclass(frozen=True)
 class BillSummary:
     """The headline figures of an account's most recent bill (bill/Current)."""
 
@@ -467,6 +483,61 @@ class AlliantEnergyApi:
         result = data.get("Result") or data.get("result") or {}
         records = result.get(_USAGE_RESULT_KEY[service_type]) or []
         return [_parse_reading(record, uom) for record in records]
+
+    async def async_get_projection(
+        self,
+        service_type: str,
+        account_number: str,
+        premise_number: str,
+        meter_number: str,
+        start: date,
+        end: date,
+    ) -> Projection | None:
+        """Return Alliant's own projection for the current calendar month.
+
+        Calls ProjectedElectric or ProjectedGas on the usage API (see
+        docs/backend-api.md). Returns None when the endpoint is not supported
+        for this account (amounts are 0) or on any API error.
+
+        Note: date format and what ``Type`` controls are unconfirmed against a
+        live account; using MM/DD/YYYY to match the rest of the usage API.
+        """
+        endpoint = _USAGE_ENDPOINT.get(service_type)
+        if endpoint is None:
+            return None
+        result_key = f"projected{endpoint}"
+        params = {
+            "AccountNumber": f"{premise_number}-{account_number}",
+            "MeterNumber": meter_number,
+            "StartDate": start.strftime("%m/%d/%Y"),
+            "EndDate": end.strftime("%m/%d/%Y"),
+            "Type": "0",
+        }
+        try:
+            data = await self._request(
+                "GET", self._usage + f"Projected{endpoint}", params=params, service="usage"
+            )
+        except AlliantEnergyError:
+            return None
+        result = data.get("Result") or data.get("result") or {}
+        raw = result.get(result_key) or {}
+        if not isinstance(raw, dict):
+            return None
+        so_far_consumption = _to_float(raw.get("soFarThisMonthProjectedConsumption"))
+        so_far_amount = _to_float(raw.get("soFarThisMonthProjectedAmount"))
+        projected_consumption = _to_float(raw.get("projectedConsumption"))
+        projected_amount = _to_float(raw.get("projectedAmount"))
+        average_year_consumption = _to_float(raw.get("averageThisYearConsumption"))
+        average_year_amount = _to_float(raw.get("averageThisYearAmount"))
+        # The other integration treats 0 as "not available" for amounts.
+        return Projection(
+            so_far_consumption=so_far_consumption or None,
+            so_far_amount=so_far_amount or None,
+            projected_consumption=projected_consumption or None,
+            projected_amount=projected_amount or None,
+            average_year_consumption=average_year_consumption or None,
+            average_year_amount=average_year_amount or None,
+        )
 
     def _service_for_meter_type(self, meter_type: Any) -> str | None:
         if not isinstance(meter_type, int):

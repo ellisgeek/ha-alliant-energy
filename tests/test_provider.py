@@ -44,6 +44,7 @@ def api():
     instance.async_get_accounts = AsyncMock(return_value=[])
     instance.async_get_meters = AsyncMock(return_value=[])
     instance.async_get_usage = AsyncMock(return_value=[])
+    instance.async_get_projection = AsyncMock(return_value=None)
     instance.async_get_current_bill = AsyncMock(return_value=BillSummary())
     instance.async_get_bill_pdf = AsyncMock(return_value=None)
     instance.close = AsyncMock()
@@ -431,12 +432,30 @@ async def test_every_sensor_after_a_full_refresh(hass: HomeAssistant, api, hass_
         "electricity_projected_cost": (
             67.01,
             "USD",
-            {"usage_to_date": 22.0, "cost_to_date": 4.62, "days_to_date": 2, "cycle_days": 29},
+            {
+                "usage_to_date": 22.0,
+                "cost_to_date": 4.62,
+                "days_to_date": 2,
+                "cycle_days": 29,
+                "alliant_projected_usage": None,
+                "alliant_projected_cost": None,
+                "alliant_so_far_usage": None,
+                "alliant_so_far_cost": None,
+            },
         ),
         "gas_projected_cost": (
             42.84,
             "USD",
-            {"usage_to_date": 2.0, "cost_to_date": 1.48, "days_to_date": 1, "cycle_days": 29},
+            {
+                "usage_to_date": 2.0,
+                "cost_to_date": 1.48,
+                "days_to_date": 1,
+                "cycle_days": 29,
+                "alliant_projected_usage": None,
+                "alliant_projected_cost": None,
+                "alliant_so_far_usage": None,
+                "alliant_so_far_cost": None,
+            },
         ),
         "electricity_rate": (
             0.16223,
@@ -475,6 +494,10 @@ async def test_every_sensor_after_a_full_refresh(hass: HomeAssistant, api, hass_
         "degree_days": (157, None, None),
         "due_date": (date(2026, 11, 2), None, None),
         "invoice_date": (date(2026, 10, 13), None, None),
+        "electricity_typical_monthly_cost": (None, "USD", None),
+        "electricity_typical_monthly_usage": (None, "kWh", None),
+        "gas_typical_monthly_cost": (None, "USD", None),
+        "gas_typical_monthly_usage": (None, "thm", None),
     }
 
 
