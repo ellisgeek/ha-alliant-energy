@@ -45,6 +45,12 @@ repos:
         language: system
         files: ^(pyproject\.toml|uv\.lock)$
         pass_filenames: false
+      - id: manifest-sync
+        name: manifest.json and pyproject.toml are in sync
+        entry: uv run --frozen python scripts/check_manifest_sync.py
+        language: system
+        files: ^(custom_components/alliant_energy/manifest\.json|pyproject\.toml)$
+        pass_filenames: false
       - id: ty
         name: ty check
         entry: uv run --frozen ty check
