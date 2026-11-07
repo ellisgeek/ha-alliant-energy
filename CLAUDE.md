@@ -6,6 +6,11 @@ cost, and bill data). The integration lives under
 `docs/backend-api.md` for the reverse-engineered backend, and `docs/adr/` for
 decisions.
 
+Architecture: `api.py` is the low-level HTTP client and must stay free of
+integration imports (no `.const`, no Home Assistant types). It will eventually
+be extracted into a standalone library. Integration-specific concerns belong in
+`provider.py` or the usage/bill modules.
+
 Checks: `uv run prek run -a` (ruff, ruff format, ty, actionlint, file checks) and
 `uv run pytest`; prek hooks run them on commit/push. Targets
 current Home Assistant only (Python 3.14; ADR 0008).
