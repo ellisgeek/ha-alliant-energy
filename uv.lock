@@ -1209,16 +1209,14 @@ wheels = [
 name = "ha-alliant-energy"
 version = "2026.10.2"
 source = { editable = "." }
-dependencies = [
-    { name = "curl-cffi" },
-    { name = "homeassistant" },
-]
 
 [package.dev-dependencies]
 dev = [
     { name = "bumpver" },
+    { name = "curl-cffi" },
     { name = "fnv-hash-fast" },
     { name = "git-cliff" },
+    { name = "homeassistant" },
     { name = "pdfplumber" },
     { name = "prek" },
     { name = "psutil-home-assistant" },
@@ -1231,16 +1229,14 @@ dev = [
 ]
 
 [package.metadata]
-requires-dist = [
-    { name = "curl-cffi", specifier = "==0.16.3" },
-    { name = "homeassistant", specifier = ">=2026.10" },
-]
 
 [package.metadata.requires-dev]
 dev = [
     { name = "bumpver", specifier = ">=2026.1132" },
+    { name = "curl-cffi", specifier = "==0.16.3" },
     { name = "fnv-hash-fast" },
     { name = "git-cliff", specifier = ">=2.14.2" },
+    { name = "homeassistant", specifier = ">=2026.10" },
     { name = "pdfplumber", specifier = "==0.11.10" },
     { name = "prek", specifier = ">=0.5.5" },
     { name = "psutil-home-assistant" },

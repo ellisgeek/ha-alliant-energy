@@ -7,7 +7,7 @@ name = "ha-alliant-energy"
 version = "2026.10.2"
 description = "Home Assistant integration for Alliant Energy electric and gas usage"
 requires-python = ">=3.14.2"
-dependencies = ["homeassistant>=2026.10", "curl_cffi==0.16.3"]
+dependencies = []
 
 [dependency-groups]
 dev = [
@@ -20,7 +20,10 @@ dev = [
     "prek>=0.5.5",
     "bumpver>=2026.1132",
     "git-cliff>=2.14.2",
-    # Runtime requirement from manifest.json; here so ty can resolve it.
+    # Minimum HA version this integration targets; also pins the test framework.
+    "homeassistant>=2026.10",
+    # Runtime requirements from manifest.json; here so ty and tests can resolve them.
+    "curl_cffi==0.16.3",
     "pdfplumber==0.11.10",
     # Recorder runtime deps that HA imports but doesn't declare in core
     # metadata; needed so the statistics module imports under test.
