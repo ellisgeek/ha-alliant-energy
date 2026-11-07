@@ -20,6 +20,8 @@ Commits: Conventional Commits, Angular types only (`build`, `ci`, `docs`,
 Real changes go on a branch and a pull request. Read `CONTRIBUTING.md` before
 live-account testing (credentials in `.env.secret`; never `source` it).
 
+PRs: Always merge with a regular merge commit (never squash or rebase merge).
+
 Releases: CalVer `YYYY.M.MICRO` like Home Assistant (e.g. `2026.10.0`, no `v`
 prefix; ADR 0009). `scripts/release.sh` (bumpver + git-cliff) bumps, writes
 the changelog, commits, and tags locally; pushing the tag triggers the Release
