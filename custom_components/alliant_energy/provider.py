@@ -98,9 +98,13 @@ class LocalUtilityClient:
         """Return the latest usage and most-recent bill cost for sensors."""
         try:
             usage, meters = await self._async_ensure_context()
+            return await self._async_build_energy_data(usage, meters)
         except AlliantEnergyAuthError:
-            self._logged_in = False
-            raise
+            if self._login_rejected is not None:
+                raise
+        # Token expired mid-fetch: re-login with stored credentials and retry once.
+        self._logged_in = False
+        usage, meters = await self._async_ensure_context()
         return await self._async_build_energy_data(usage, meters)
 
     async def async_update_statistics(self, bill: Bill) -> None:
@@ -121,9 +125,22 @@ class LocalUtilityClient:
                 max_history_days=max_history_days(self.entry),
                 past_bills=self._past_bills,
             )
+            return
         except AlliantEnergyAuthError:
-            self._logged_in = False
-            raise
+            if self._login_rejected is not None:
+                raise
+        # Token expired mid-import: re-login with stored credentials and retry once.
+        self._logged_in = False
+        usage, meters = await self._async_ensure_context()
+        await stats.async_update_statistics(
+            self.hass,
+            usage,
+            self._account_id,
+            meters,
+            rates=self._known_rates(bill),
+            max_history_days=max_history_days(self.entry),
+            past_bills=self._past_bills,
+        )
 
     def _known_rates(self, bill: Bill) -> dict[str, KnownRates]:
         """Each service's static rate (options) and marginal rate (itemized bill)."""
