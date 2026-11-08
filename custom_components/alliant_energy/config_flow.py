@@ -52,6 +52,7 @@ from .const import (
     MAX_UPDATE_INTERVAL_HOURS,
     MIN_HISTORY_DAYS,
     MIN_UPDATE_INTERVAL_HOURS,
+    REAUTH_PORTAL_MESSAGE,
     UTILITY,
 )
 from .options import max_history_days, update_interval
@@ -81,6 +82,17 @@ class AlliantEnergyConfigFlow(ConfigFlow, domain=DOMAIN):
         self._credentials: dict[str, str] = {}
         self._accounts: list[Account] = []
         self._api: AlliantEnergyApi | None = None
+        self._portal_message: str | None = None
+        self._reauth_reason = ""
+
+    @property
+    def _placeholders(self) -> dict[str, str]:
+        return {"portal_message": self._portal_message or ""}
+
+    def _error_key(self, err: AlliantEnergyError, fallback: str) -> str:
+        """Return the error to show, preferring the portal's own message."""
+        self._portal_message = err.portal_message
+        return "portal_message" if err.portal_message else fallback
 
     async def async_step_user(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """Collect credentials and authenticate."""
@@ -94,7 +106,12 @@ class AlliantEnergyConfigFlow(ConfigFlow, domain=DOMAIN):
             if result is not None:
                 return result
 
-        return self.async_show_form(step_id="user", data_schema=STEP_USER_SCHEMA, errors=errors)
+        return self.async_show_form(
+            step_id="user",
+            data_schema=STEP_USER_SCHEMA,
+            errors=errors,
+            description_placeholders=self._placeholders,
+        )
 
     async def async_step_account(
         self, user_input: dict[str, Any] | None = None
@@ -126,16 +143,16 @@ class AlliantEnergyConfigFlow(ConfigFlow, domain=DOMAIN):
             mode = TFA_MODE_EMAIL if self._api.tfa_details.get("email") else TFA_MODE_TEXT
             try:
                 await self._api.async_send_tfa(mode)
-            except AlliantEnergyError:
-                return await self._async_abort("cannot_connect")
+            except AlliantEnergyError as err:
+                return await self._async_abort("cannot_connect", err)
         else:
             try:
                 await self._api.async_verify_tfa(user_input["code"])
                 self._accounts = await self._api.async_get_accounts()
-            except AlliantEnergyAuthError:
-                errors["base"] = "invalid_tfa"
-            except AlliantEnergyError:
-                return await self._async_abort("cannot_connect")
+            except AlliantEnergyAuthError as err:
+                errors["base"] = self._error_key(err, "invalid_tfa")
+            except AlliantEnergyError as err:
+                return await self._async_abort("cannot_connect", err)
             else:
                 return await self._async_finish_accounts()
 
@@ -143,6 +160,7 @@ class AlliantEnergyConfigFlow(ConfigFlow, domain=DOMAIN):
             step_id="tfa",
             data_schema=vol.Schema({vol.Required("code"): str}),
             errors=errors,
+            description_placeholders=self._placeholders,
         )
 
     async def _async_login_and_route(self, errors: dict[str, str]) -> ConfigFlowResult | None:
@@ -153,20 +171,20 @@ class AlliantEnergyConfigFlow(ConfigFlow, domain=DOMAIN):
                 self._credentials[CONF_USERNAME], self._credentials[CONF_PASSWORD]
             )
             self._accounts = await self._api.async_get_accounts()
-        except AlliantEnergyAccountLockedError:
-            errors["base"] = "account_locked"
+        except AlliantEnergyAccountLockedError as err:
+            errors["base"] = self._error_key(err, "account_locked")
             await self._async_close()
             return None
-        except AlliantEnergyAuthError:
+        except AlliantEnergyAuthError as err:
             # Credentials were accepted but data access was refused: if the
             # account has TFA on, offer the challenge; otherwise it's bad creds.
             if self._api.tfa_required:
                 return await self.async_step_tfa()
-            errors["base"] = "invalid_auth"
+            errors["base"] = self._error_key(err, "invalid_auth")
             await self._async_close()
             return None
-        except AlliantEnergyError:
-            errors["base"] = "cannot_connect"
+        except AlliantEnergyError as err:
+            errors["base"] = self._error_key(err, "cannot_connect")
             await self._async_close()
             return None
         except Exception:  # noqa: BLE001
@@ -201,9 +219,13 @@ class AlliantEnergyConfigFlow(ConfigFlow, domain=DOMAIN):
             title=f"Alliant Energy ({account.account_number})", data=data
         )
 
-    async def _async_abort(self, reason: str) -> ConfigFlowResult:
+    async def _async_abort(
+        self, reason: str, err: AlliantEnergyError | None = None
+    ) -> ConfigFlowResult:
         await self._async_close()
-        return self.async_abort(reason=reason)
+        if err is not None:
+            reason = self._error_key(err, reason)
+        return self.async_abort(reason=reason, description_placeholders=self._placeholders)
 
     @callback
     def async_remove(self) -> None:
@@ -217,6 +239,7 @@ class AlliantEnergyConfigFlow(ConfigFlow, domain=DOMAIN):
 
     async def async_step_reauth(self, entry_data: Mapping[str, Any]) -> ConfigFlowResult:
         """Handle re-authentication when stored credentials stop working."""
+        self._reauth_reason = str(entry_data.get(REAUTH_PORTAL_MESSAGE) or "")
         return await self.async_step_reauth_confirm()
 
     async def async_step_reauth_confirm(
@@ -245,6 +268,11 @@ class AlliantEnergyConfigFlow(ConfigFlow, domain=DOMAIN):
                 }
             ),
             errors=errors,
+            # After a failed attempt the error shows the current message.
+            description_placeholders={
+                **self._placeholders,
+                "reason": "" if errors else self._reauth_reason,
+            },
         )
 
 

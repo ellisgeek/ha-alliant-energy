@@ -12,7 +12,7 @@ from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .bill import Bill
-from .const import DOMAIN
+from .const import DOMAIN, REAUTH_PORTAL_MESSAGE
 from .models import EnergyData
 from .options import update_interval
 from .provider import AlliantEnergyAuthError
@@ -57,6 +57,9 @@ class EnergyCoordinator(DataUpdateCoordinator[EnergyData]):
         try:
             data = await self.client.async_fetch_data()
         except AlliantEnergyAuthError as err:
+            # Started here so the prompt can say why; Home Assistant's own
+            # reauthentication carries no message and finds this flow running.
+            self._start_reauth(err)
             raise ConfigEntryAuthFailed(str(err)) from err
         except Exception as err:
             if self.data is not None:
@@ -64,6 +67,12 @@ class EnergyCoordinator(DataUpdateCoordinator[EnergyData]):
             raise UpdateFailed(f"Unable to fetch utility readings: {err}") from err
         self._start_statistics_import(data.bill)
         return data
+
+    def _start_reauth(self, err: AlliantEnergyAuthError) -> None:
+        """Ask for new credentials, passing on why the portal refused the login."""
+        self.config_entry.async_start_reauth(
+            self.hass, data={REAUTH_PORTAL_MESSAGE: err.portal_message}
+        )
 
     def _start_statistics_import(self, bill: Bill) -> None:
         """Import statistics in the background, unless an import is still running.
@@ -81,7 +90,7 @@ class EnergyCoordinator(DataUpdateCoordinator[EnergyData]):
     async def _async_import_statistics(self, bill: Bill) -> None:
         try:
             await self.client.async_update_statistics(bill)
-        except AlliantEnergyAuthError:
-            self.config_entry.async_start_reauth(self.hass)
+        except AlliantEnergyAuthError as err:
+            self._start_reauth(err)
         except Exception as err:  # noqa: BLE001 - best-effort, never crash the task
             _LOGGER.warning("Alliant Energy statistics import failed: %s", err)

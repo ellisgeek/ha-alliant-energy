@@ -210,8 +210,10 @@ async def test_login_reports_a_locked_account() -> None:
         )
     )
 
-    with pytest.raises(AlliantEnergyAccountLockedError, match="temporarily locked"):
+    with pytest.raises(AlliantEnergyAccountLockedError, match="temporarily locked") as err:
         await api.async_login("user", "pass")
+
+    assert err.value.portal_message == message
 
 
 async def test_login_refused_with_an_error_flag_is_an_auth_error() -> None:
@@ -257,6 +259,37 @@ async def test_refresh_refused_over_http_is_an_auth_error(http_status: int) -> N
 
     with pytest.raises(AlliantEnergyAuthError, match=str(http_status)):
         await api.async_refresh_token()
+
+
+async def test_portal_message_is_kept_on_envelope_errors() -> None:
+    api, _ = _api(_FakeResponse(200, {"status": {"code": 500, "message": "Try later"}}))
+    api._access_token = "token"  # noqa: SLF001
+
+    with pytest.raises(AlliantEnergyError) as err:
+        await api.async_get_current_bill("acct")
+
+    assert err.value.portal_message == "Try later"
+
+
+@pytest.mark.parametrize("http_status", [403, 500])
+async def test_portal_message_is_kept_on_http_errors(http_status: int) -> None:
+    api, _ = _api(_FakeResponse(http_status, {"status": {"message": "Refused"}}))
+
+    with pytest.raises(AlliantEnergyError) as err:
+        await api.async_login("user", "pass")
+
+    assert err.value.portal_message == "Refused"
+
+
+async def test_html_error_page_has_no_portal_message() -> None:
+    response = _FakeResponse(403, {})
+    response.text = "<html>Blocked</html>"
+    api, _ = _api(response)
+
+    with pytest.raises(AlliantEnergyError) as err:
+        await api.async_login("user", "pass")
+
+    assert err.value.portal_message is None
 
 
 async def test_get_accounts_parses_account_and_premise() -> None:

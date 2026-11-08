@@ -17,7 +17,7 @@
         "title": "Choose account"
       },
       "reauth_confirm": {
-        "description": "Your Alliant Energy sign-in needs to be renewed.",
+        "description": "Your Alliant Energy sign-in needs to be renewed. {reason}",
         "data": {
           "username": "Username or email",
           "password": "Password"
@@ -34,6 +34,7 @@
     },
     "error": {
       "invalid_auth": "Invalid username or password.",
+      "portal_message": "{portal_message}",
       "account_locked": "Alliant Energy has temporarily locked this account for security reasons. Wait 24 hours, then try again.",
       "invalid_tfa": "That verification code was not accepted.",
       "cannot_connect": "Could not reach Alliant Energy. Try again later.",
@@ -43,6 +44,7 @@
     },
     "abort": {
       "already_configured": "This account is already configured.",
+      "portal_message": "{portal_message}",
       "account_mismatch": "These credentials do not include the account you are re-authenticating.",
       "reauth_successful": "Re-authentication was successful.",
       "no_accounts": "No accounts were found for this login.",
