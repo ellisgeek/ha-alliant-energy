@@ -8,6 +8,7 @@ from homeassistant.helpers.update_coordinator import UpdateFailed
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.alliant_energy.api import (
+    AlliantEnergyAccountLockedError,
     AlliantEnergyAuthError,
     AlliantEnergyError,
 )
@@ -40,6 +41,21 @@ async def test_coordinator_auth_error_becomes_auth_failed(
     """Auth errors trigger Home Assistant reauth, not a transient failure."""
     client = AsyncMock()
     client.async_fetch_data.side_effect = AlliantEnergyAuthError("expired")
+    coordinator = EnergyCoordinator(hass, config_entry, client)
+
+    await coordinator.async_refresh()
+
+    assert isinstance(coordinator.last_exception, ConfigEntryAuthFailed)
+    await hass.async_block_till_done()
+    flows = hass.config_entries.flow.async_progress_by_handler(DOMAIN)
+    assert [flow["context"]["source"] for flow in flows] == ["reauth"]
+
+
+async def test_coordinator_locked_account_prompts_for_reauthentication(
+    hass: HomeAssistant, config_entry: MockConfigEntry
+) -> None:
+    client = AsyncMock()
+    client.async_fetch_data.side_effect = AlliantEnergyAccountLockedError("locked")
     coordinator = EnergyCoordinator(hass, config_entry, client)
 
     await coordinator.async_refresh()

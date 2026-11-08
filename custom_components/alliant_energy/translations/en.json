@@ -34,6 +34,7 @@
     },
     "error": {
       "invalid_auth": "Invalid username or password.",
+      "account_locked": "Alliant Energy has temporarily locked this account for security reasons. Wait 24 hours, then try again.",
       "invalid_tfa": "That verification code was not accepted.",
       "cannot_connect": "Could not reach Alliant Energy. Try again later.",
       "no_accounts": "No accounts were found for this login.",

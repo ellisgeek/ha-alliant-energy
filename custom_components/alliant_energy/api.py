@@ -85,6 +85,9 @@ TFA_MODE_TEXT = 1
 TFA_MODE_EMAIL = 2
 TFA_MODE_VOICE = 3
 
+# status.msgcode of a login refused because the account is locked.
+_MSGCODE_ACCOUNT_LOCKED = "LOG008"
+
 
 class AlliantEnergyError(Exception):
     """Base error for the Alliant Energy client."""
@@ -92,6 +95,10 @@ class AlliantEnergyError(Exception):
 
 class AlliantEnergyAuthError(AlliantEnergyError):
     """Raised when authentication fails or the session cannot be refreshed."""
+
+
+class AlliantEnergyAccountLockedError(AlliantEnergyAuthError):
+    """Raised when the portal has temporarily locked the account."""
 
 
 @dataclass(frozen=True)
@@ -611,6 +618,8 @@ class AlliantEnergyApi:
                 service=service,
                 _retry=False,
             )
+        if status in (401, 403) and not authenticated:
+            raise AlliantEnergyAuthError(f"{method} {url} refused: HTTP {status}: {text[:300]}")
         if status >= 400:
             raise AlliantEnergyError(f"{method} {url} failed: HTTP {status}: {text[:300]}")
         try:
@@ -618,7 +627,7 @@ class AlliantEnergyApi:
         except json.JSONDecodeError as err:
             raise AlliantEnergyError(f"{method} {url} returned invalid JSON") from err
 
-        _raise_for_status_code(data)
+        _raise_for_status_code(data, credentials_call=not authenticated)
         return data
 
 
@@ -652,20 +661,25 @@ def _parse_reading(record: dict[str, Any], unit: str) -> UsageReading:
     )
 
 
-def _raise_for_status_code(data: dict[str, Any]) -> None:
-    """Raise if the SEW envelope reports a non-success status code.
+def _raise_for_status_code(data: dict[str, Any], *, credentials_call: bool = False) -> None:
+    """Raise if the SEW envelope reports a failure.
 
-    Responses wrap results in ``{"status": {"code": 200, ...}, "data": ...}``.
+    Responses wrap results in ``{"status": {"code": 200, ...}, "data": ...}``;
+    a failure has a non-200 code or, even with code 200, ``error: true``.
     Usage responses use a flatter ``{"StatusCode": 200, "Result": ...}`` shape
-    and are left to the caller.
+    and are left to the caller. ``credentials_call`` marks a login or refresh.
     """
     status = data.get("status")
     if not isinstance(status, dict):
         return
     code = status.get("code")
-    if code in (None, 200):
+    msgcode = status.get("msgcode")
+    message = status.get("message") or msgcode or status.get("messageCode") or "request failed"
+    if msgcode == _MSGCODE_ACCOUNT_LOCKED:
+        raise AlliantEnergyAccountLockedError(f"Account locked: {message}")
+    if code in (None, 200) and status.get("error") is not True:
         return
-    message = status.get("message") or status.get("messageCode") or "request failed"
-    if code in (401, 403):
+    # A login or refresh refused with a 200 status is a rejection, not an outage.
+    if code in (401, 403) or (credentials_call and code in (None, 200)):
         raise AlliantEnergyAuthError(f"Authentication failed ({code}): {message}")
     raise AlliantEnergyError(f"API error ({code}): {message}")

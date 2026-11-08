@@ -33,6 +33,7 @@ from .api import (
     TFA_MODE_EMAIL,
     TFA_MODE_TEXT,
     Account,
+    AlliantEnergyAccountLockedError,
     AlliantEnergyApi,
     AlliantEnergyAuthError,
     AlliantEnergyError,
@@ -152,6 +153,10 @@ class AlliantEnergyConfigFlow(ConfigFlow, domain=DOMAIN):
                 self._credentials[CONF_USERNAME], self._credentials[CONF_PASSWORD]
             )
             self._accounts = await self._api.async_get_accounts()
+        except AlliantEnergyAccountLockedError:
+            errors["base"] = "account_locked"
+            await self._async_close()
+            return None
         except AlliantEnergyAuthError:
             # Credentials were accepted but data access was refused: if the
             # account has TFA on, offer the challenge; otherwise it's bad creds.

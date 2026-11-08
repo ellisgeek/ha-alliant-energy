@@ -18,6 +18,7 @@ from curl_cffi.requests.exceptions import RequestException
 from custom_components.alliant_energy.api import (
     SERVICE_ELECTRIC,
     SERVICE_GAS,
+    AlliantEnergyAccountLockedError,
     AlliantEnergyApi,
     AlliantEnergyAuthError,
     AlliantEnergyError,
@@ -186,6 +187,76 @@ async def test_login_rejects_error_status() -> None:
 
     with pytest.raises(AlliantEnergyAuthError):
         await api.async_login("user", "bad")
+
+
+async def test_login_reports_a_locked_account() -> None:
+    """The portal reports a lockout as a 200 whose envelope has no token (LOG008)."""
+    message = (
+        "Your account has been temporarily locked for security reasons. "
+        "Please try again in 24 hours."
+    )
+    api, _ = _api(
+        _FakeResponse(
+            200,
+            {
+                "status": {
+                    "type": None,
+                    "code": 200,
+                    "message": message,
+                    "error": True,
+                    "msgcode": "LOG008",
+                }
+            },
+        )
+    )
+
+    with pytest.raises(AlliantEnergyAccountLockedError, match="temporarily locked"):
+        await api.async_login("user", "pass")
+
+
+async def test_login_refused_with_an_error_flag_is_an_auth_error() -> None:
+    """A refusal other than a lockout must not look transient and be retried."""
+    api, _ = _api(
+        _FakeResponse(
+            200, {"status": {"code": 200, "message": "Refused", "error": True, "msgcode": "LOG001"}}
+        )
+    )
+
+    with pytest.raises(AlliantEnergyAuthError, match="Refused") as err:
+        await api.async_login("user", "pass")
+
+    assert not isinstance(err.value, AlliantEnergyAccountLockedError)
+
+
+async def test_error_flag_on_a_data_call_is_an_api_error() -> None:
+    """A 200 envelope flagged as an error is a failure, not an empty result."""
+    api, _ = _api(
+        _FakeResponse(200, {"status": {"code": 200, "message": "Nope", "error": True}, "data": []})
+    )
+    api._user_uuid = "uuid"  # noqa: SLF001
+    api._access_token = "token"  # noqa: SLF001
+
+    with pytest.raises(AlliantEnergyError, match="Nope") as err:
+        await api.async_get_accounts()
+
+    assert not isinstance(err.value, AlliantEnergyAuthError)
+
+
+@pytest.mark.parametrize("http_status", [401, 403])
+async def test_login_refused_over_http_is_an_auth_error(http_status: int) -> None:
+    api, _ = _api(_FakeResponse(http_status, {"message": "Refused"}))
+
+    with pytest.raises(AlliantEnergyAuthError, match=str(http_status)):
+        await api.async_login("user", "pass")
+
+
+@pytest.mark.parametrize("http_status", [401, 403])
+async def test_refresh_refused_over_http_is_an_auth_error(http_status: int) -> None:
+    api, _ = _api(_FakeResponse(http_status, {"message": "Expired"}))
+    api._refresh_token = "refresh"  # noqa: SLF001
+
+    with pytest.raises(AlliantEnergyAuthError, match=str(http_status)):
+        await api.async_refresh_token()
 
 
 async def test_get_accounts_parses_account_and_premise() -> None:
