@@ -85,13 +85,27 @@ TFA_MODE_TEXT = 1
 TFA_MODE_EMAIL = 2
 TFA_MODE_VOICE = 3
 
+# status.msgcode of a login refused because the account is locked.
+_MSGCODE_ACCOUNT_LOCKED = "LOG008"
+
 
 class AlliantEnergyError(Exception):
-    """Base error for the Alliant Energy client."""
+    """Base error for the Alliant Energy client.
+
+    ``portal_message`` is the portal's own explanation, when it gave one.
+    """
+
+    def __init__(self, *args: object, portal_message: str | None = None) -> None:
+        super().__init__(*args)
+        self.portal_message = portal_message
 
 
 class AlliantEnergyAuthError(AlliantEnergyError):
     """Raised when authentication fails or the session cannot be refreshed."""
+
+
+class AlliantEnergyAccountLockedError(AlliantEnergyAuthError):
+    """Raised when the portal has temporarily locked the account."""
 
 
 @dataclass(frozen=True)
@@ -611,14 +625,22 @@ class AlliantEnergyApi:
                 service=service,
                 _retry=False,
             )
+        if status in (401, 403) and not authenticated:
+            raise AlliantEnergyAuthError(
+                f"{method} {url} refused: HTTP {status}: {text[:300]}",
+                portal_message=_portal_message_from_body(text),
+            )
         if status >= 400:
-            raise AlliantEnergyError(f"{method} {url} failed: HTTP {status}: {text[:300]}")
+            raise AlliantEnergyError(
+                f"{method} {url} failed: HTTP {status}: {text[:300]}",
+                portal_message=_portal_message_from_body(text),
+            )
         try:
             data = json.loads(text) if text else {}
         except json.JSONDecodeError as err:
             raise AlliantEnergyError(f"{method} {url} returned invalid JSON") from err
 
-        _raise_for_status_code(data)
+        _raise_for_status_code(data, credentials_call=not authenticated)
         return data
 
 
@@ -652,20 +674,45 @@ def _parse_reading(record: dict[str, Any], unit: str) -> UsageReading:
     )
 
 
-def _raise_for_status_code(data: dict[str, Any]) -> None:
-    """Raise if the SEW envelope reports a non-success status code.
+def _portal_message(status: Any) -> str | None:
+    """Return the human-readable message of an envelope's ``status``, if any."""
+    message = status.get("message") if isinstance(status, dict) else None
+    return message if isinstance(message, str) and message else None
 
-    Responses wrap results in ``{"status": {"code": 200, ...}, "data": ...}``.
+
+def _portal_message_from_body(text: str) -> str | None:
+    """Return the portal's message from an error body; None if it is not JSON."""
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    return _portal_message(data.get("status")) if isinstance(data, dict) else None
+
+
+def _raise_for_status_code(data: dict[str, Any], *, credentials_call: bool = False) -> None:
+    """Raise if the SEW envelope reports a failure.
+
+    Responses wrap results in ``{"status": {"code": 200, ...}, "data": ...}``;
+    a failure has a non-200 code or, even with code 200, ``error: true``.
     Usage responses use a flatter ``{"StatusCode": 200, "Result": ...}`` shape
-    and are left to the caller.
+    and are left to the caller. ``credentials_call`` marks a login or refresh.
     """
     status = data.get("status")
     if not isinstance(status, dict):
         return
     code = status.get("code")
-    if code in (None, 200):
+    msgcode = status.get("msgcode")
+    portal_message = _portal_message(status)
+    message = portal_message or msgcode or status.get("messageCode") or "request failed"
+    if msgcode == _MSGCODE_ACCOUNT_LOCKED:
+        raise AlliantEnergyAccountLockedError(
+            f"Account locked: {message}", portal_message=portal_message
+        )
+    if code in (None, 200) and status.get("error") is not True:
         return
-    message = status.get("message") or status.get("messageCode") or "request failed"
-    if code in (401, 403):
-        raise AlliantEnergyAuthError(f"Authentication failed ({code}): {message}")
-    raise AlliantEnergyError(f"API error ({code}): {message}")
+    # A login or refresh refused with a 200 status is a rejection, not an outage.
+    if code in (401, 403) or (credentials_call and code in (None, 200)):
+        raise AlliantEnergyAuthError(
+            f"Authentication failed ({code}): {message}", portal_message=portal_message
+        )
+    raise AlliantEnergyError(f"API error ({code}): {message}", portal_message=portal_message)

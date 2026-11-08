@@ -9,6 +9,7 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.alliant_energy.api import (
     Account,
+    AlliantEnergyAccountLockedError,
     AlliantEnergyAuthError,
     AlliantEnergyError,
 )
@@ -105,6 +106,17 @@ async def test_invalid_auth_without_tfa(hass, enable_custom_integrations) -> Non
         )
     assert result["type"] is FlowResultType.FORM
     assert result["errors"] == {"base": "invalid_auth"}
+
+
+async def test_locked_account_is_reported_on_setup(hass, enable_custom_integrations) -> None:
+    api = _mock_api(login=AlliantEnergyAccountLockedError("locked"))
+    result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": SOURCE_USER})
+    with _patch(api):
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], user_input=USER_INPUT
+        )
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"] == {"base": "account_locked"}
 
 
 async def test_tfa_challenge_flow(hass, enable_custom_integrations) -> None:
@@ -354,3 +366,100 @@ async def test_reauth_with_a_wrong_password_asks_again(hass, enable_custom_integ
     assert result["type"] is FlowResultType.FORM
     assert result["step_id"] == "reauth_confirm"
     assert result["errors"] == {"base": "invalid_auth"}
+
+
+async def test_reauth_on_a_locked_account_says_so(hass, enable_custom_integrations) -> None:
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        unique_id="A1",
+        data={**USER_INPUT, "account_id": "A1", "premise_id": "P1"},
+    )
+    entry.add_to_hass(hass)
+    result = await entry.start_reauth_flow(hass)
+
+    result = await _submit(
+        hass,
+        _mock_api(login=AlliantEnergyAccountLockedError("locked")),
+        USER_INPUT,
+        result["flow_id"],
+    )
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "reauth_confirm"
+    assert result["errors"] == {"base": "account_locked"}
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        AlliantEnergyAccountLockedError("locked", portal_message="Locked for 24 hours."),
+        AlliantEnergyAuthError("bad", portal_message="Wrong password."),
+        AlliantEnergyError("down", portal_message="Down for maintenance."),
+    ],
+    ids=["locked", "rejected", "unavailable"],
+)
+async def test_setup_form_shows_the_portal_message(hass, enable_custom_integrations, error) -> None:
+    result = await _submit(hass, _mock_api(login=error))
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"] == {"base": "portal_message"}
+    assert result["description_placeholders"]["portal_message"] == error.portal_message
+
+
+async def test_tfa_form_shows_the_portal_message(hass, enable_custom_integrations) -> None:
+    api = _tfa_api(verify=AlliantEnergyAuthError("wrong", portal_message="Code expired."))
+    result = await _submit(hass, api)
+
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], user_input={"code": "123456"}
+    )
+
+    assert result["errors"] == {"base": "portal_message"}
+    assert result["description_placeholders"]["portal_message"] == "Code expired."
+
+
+async def test_tfa_abort_shows_the_portal_message(hass, enable_custom_integrations) -> None:
+    api = _tfa_api(send=AlliantEnergyError("down", portal_message="Texts are unavailable."))
+
+    result = await _submit(hass, api)
+
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "portal_message"
+    assert result["description_placeholders"]["portal_message"] == "Texts are unavailable."
+
+
+async def test_reauth_form_explains_why_before_any_login(hass, enable_custom_integrations) -> None:
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        unique_id="A1",
+        data={**USER_INPUT, "account_id": "A1", "premise_id": "P1"},
+    )
+    entry.add_to_hass(hass)
+
+    result = await entry.start_reauth_flow(hass, data={"portal_message": "Locked for 24 hours."})
+
+    assert result["step_id"] == "reauth_confirm"
+    placeholders = result["description_placeholders"]
+    assert placeholders is not None
+    assert placeholders["reason"] == "Locked for 24 hours."
+
+
+async def test_reauth_failure_shows_the_message_once(hass, enable_custom_integrations) -> None:
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        unique_id="A1",
+        data={**USER_INPUT, "account_id": "A1", "premise_id": "P1"},
+    )
+    entry.add_to_hass(hass)
+    result = await entry.start_reauth_flow(hass, data={"portal_message": "Locked for 24 hours."})
+
+    result = await _submit(
+        hass,
+        _mock_api(login=AlliantEnergyAccountLockedError("x", portal_message="Still locked.")),
+        USER_INPUT,
+        result["flow_id"],
+    )
+
+    assert result["errors"] == {"base": "portal_message"}
+    assert result["description_placeholders"]["portal_message"] == "Still locked."
+    assert result["description_placeholders"]["reason"] == ""

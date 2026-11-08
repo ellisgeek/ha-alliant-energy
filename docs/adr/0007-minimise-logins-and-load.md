@@ -6,7 +6,10 @@ logs in once per Home Assistant run, then renews the session with the refresh
 token on HTTP 401. It polls once a day by default; an option allows 3 to 24
 hours. After the first import, updates fetch only new hours, and the first
 import fetches history in chunks with a delay between requests. After a failed
-login it goes to reauthentication and does not retry the password.
+login it goes to reauthentication and does not retry the password. A locked
+account takes the same path, and the form shows the portal's message before
+any new login; the integration does not try again by itself when the lock
+ends.
 
 ## Consequences
 

@@ -18,6 +18,9 @@ CONF_PASSWORD = "password"
 CONF_ACCOUNT_ID = "account_id"
 CONF_PREMISE_ID = "premise_id"
 
+# Why the portal refused the login, passed to the reauthentication flow.
+REAUTH_PORTAL_MESSAGE = "portal_message"
+
 # Optional static price overrides (integration options). When unset, cost is
 # derived from an effective rate per billing period (bill amount / consumption)
 # for both electricity and gas.

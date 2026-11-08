@@ -48,7 +48,8 @@ sent as exactly the bytes that were signed, so serialize it once with
 
 Most endpoints return `{"status": {"code": 200, "message": ...}, "data": ...}`.
 A non-200 `status.code` is an error; 401 and 403 mean authentication failed.
-Usage endpoints return a flatter `{"StatusCode": 200, "Result": {...}}`.
+`status.error: true` is also an error, even when `status.code` is 200, and
+`status.msgcode` then identifies it. Usage endpoints return a flatter `{"StatusCode": 200, "Result": {...}}`.
 
 ## Authentication
 
@@ -74,6 +75,21 @@ phone and email.
 The web client attaches a reCAPTCHA v3 token, but the backend does not check
 it. Repeated failed logins can lock the IP; see
 [ADR 0007](adr/0007-minimise-logins-and-load.md).
+
+A locked account was seen live in November 2026. The login returns HTTP 200
+with no `data`:
+
+```json
+{
+  "status": {
+    "type": null,
+    "code": 200,
+    "message": "Your account has been temporarily locked for security reasons. Please try again in 24 hours.",
+    "error": true,
+    "msgcode": "LOG008"
+  }
+}
+```
 
 **`POST UsermanagementAPI/api/1/Login/auth/refresh`** with
 `{"refreshToken": "..."}` returns a new token pair in the same shape.
